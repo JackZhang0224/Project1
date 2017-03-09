@@ -1,0 +1,265 @@
+# Part 3e - Schedule/Linefill Station
+
+Required Packages for this script
+
+```{r Required Packages}
+
+library(plyr)
+library(dplyrXdf)
+library(lubridate)
+
+```
+
+Import the data we need
+
+```{r Data Import}
+
+Pi2 <- RxXdfData("Line2.xdf")
+Schedule_Ori <- RxXdfData()
+Line2 <- RxXdfData("Pi_Schedule.xdf")
+Sch <- RxXdfData("Schedule.xdf")
+Linefill <- RxXdfData("Linefill.xdf")
+Schedule <- RxXdfData("Schedule_Linefill_Ori.xdf")
+
+```
+
+We've already fixed an issue with the line segments not matching but let's compare the stations in both data sets.
+
+```{r Stations in Both}
+
+Line2_st <- Line2 %>% select(pump_station) %>% distinct %>% head(50)
+Line2_st <- as.character(Line2_st$pump_station)
+
+Sch_st <- Schedule %>% select(pump_station) %>% distinct %>% head(50)
+Sch_st <- as.character(Sch_st$pump_station)
+
+length(Line2_st)
+length(Sch_st)
+
+```
+
+We can see that there are more stations in the Schedule data then there is in the Pi data. However if we go back and look at the raw data, we can see that there was originally 31 stations in the data. We lost these 3 stations when we filtered out all of the NA values.
+
+What stations are these
+
+```{r Lost Stations}
+
+Sch_st[!(Sch_st %in% Line2_st)]
+
+```
+
+We've previously looked at activity and commodity in Part 3a so let's look into all the NA values right now. First let's confirm that there are no points where one of commodity or activity is NA and the other isn't.
+
+```{r confirm NAs}
+
+Line2 %>% filter(is.na(activity_code)) %>% filter(!is.na(commodity_group)) %>% nrow
+Line2 %>% filter(!is.na(activity_code)) %>% filter(is.na(commodity_group)) %>% nrow
+
+```
+
+Running both lines gives us NULL errors which means that no rows exactly one of commodity or activity NA.
+
+Of the remaining stations, let's look at the percentage of data points that are NAs
+
+```{r Station NAs}
+
+Line2_NA <- rxDataStep(Line2, outFile = "Line2_NA.xdf", rowSelection = (is.na(activity_code) == TRUE))
+
+seg_counts <- rxCube(~line_segment, Line2, removeZeroCounts = T, returnDataFrame = T)
+segNA_counts <- rxCube(~line_segment, Line2_NA, removeZeroCounts = T)
+
+seg_counts$Total_NAs <- segNA_counts$Counts
+seg_counts$Percentage <- seg_counts$Total_NAs/seg_counts$Counts
+seg_counts <-plyr::rename(seg_counts, c("Counts" = "Total_Number"))
+print(seg_counts)
+
+```
+
+Let's look at the percentage of the data points that are NA for each segment. We'll also include a column for segment so we can compare.
+
+```{r Station NAs}
+
+st_counts <- rxCube(~pump_station:line_segment, Line2, removeZeroCounts = T, returnDataFrame = T)
+stNA_counts <- rxCube(~pump_station, Line2_NA, removeZeroCounts = T)
+
+st_counts$Total_NAs <- stNA_counts$Counts
+st_counts$Percentage <- st_counts$Total_NAs/st_counts$Counts
+st_counts <- plyr::rename(st_counts, c("Counts" = "Total_Number"))
+print(st_counts)
+
+```
+
+It's possible that the NA values are showing up because there is downtime. Let's explore
+
+The counts for pump_status_on for Line2_NA
+
+```{r Pump_status_on Counts for NA}
+
+PumpsOn_counts <- rxCube(~pump_status_on, Line2, removeZeroCounts = T, returnDataFrame = T)
+PumpsOnNA_counts <- rxCube(~pump_status_on, Line2_NA, removeZeroCounts = T)
+
+PumpsOn_counts$Total_NAs <- PumpsOnNA_counts$Counts
+PumpsOn_counts$Percentage <- PumpsOn_counts$Total_NAs/PumpsOn_counts$Counts
+PumpsOn_counts <- plyr::rename(PumpsOn_counts, c("Counts" = "Total_Number"))
+print(PumpsOn_counts)
+
+```
+
+The porportion of NAs doesn't seem to be related to the number of pumps on.
+
+Let's look at the distribution of flow and hhpu for Line2_NA and compare it to the original distribution
+
+```{r Flow NA Distribution}
+
+rxHistogram(~flow_rate, Line2, title = "Original")
+rxHistogram(~flow_rate, Line2_NA, title = "NAs Removed")
+
+```
+
+Let's do the same for HHPU
+
+```{r HHPU Distribution NAs}
+
+rxHistogram(~hhpu, Line2, title = "Original")
+rxHistogram(~hhpu, Line2_NA, title = "NAs Removed")
+
+```
+
+There is no difference between the distributions of both flow and hhpu.
+
+There seems to be no relationship between the NA's appearing in the schedule data and downtime observed in the pi data.
+
+the probably reason for all the NAs is because there are gaps in the schedule data. To investigate let's create some new datetime variables.
+
+```{r Datetime Schedule}
+
+create_Datetime_Sch <- function(dat){
+  dat$ts_year <- year(dat$ts_pi)
+  dat$ts_month <- month(dat$ts_pi)
+  dat$day <- day(dat$ts_pi)
+  dat$ts_hour <- hour(dat$ts_pi)
+  dat$ts_min <- minute(dat$ts_pi)
+  return(dat)
+}
+
+Schedule <- rxDataStep(Schedule, outFile = "Schedule_DT.xdf", transformFunc = create_Datetime_Sch,
+                       transformPackages = "lubridate")
+
+```
+
+Let's first compare the counts and percentage of data points in each month for both
+
+```{r Counts Month Line2}
+
+Month_Counts <- rxCube(~F(ts_month), Line2, returnDataFrame = T)
+Month_Counts$Percentage_Pi <- round(Month_Counts$Counts/nrow(Line2)*100,2)
+Month_Counts <- plyr::rename(Month_Counts, c("Counts" = "Counts_Pi"))
+
+month_counts_sch <- rxCube(~F(ts_month), Schedule)
+Month_Counts$Counts_Sch <- month_counts_sch$Counts
+Month_Counts$Percentage_Sch <- round(Month_Counts$Counts_Sch/nrow(Schedule)*100,2)
+
+month_counts_na <- rxCube(~F(ts_month), Line2_NA)
+Month_Counts$Counts_NA <- month_counts_na$Counts
+Month_Counts$Percentage_NA <- round(Month_Counts$Counts_NA/nrow(Line2_NA)*100,2)
+
+Month_Counts$Difference_PiSch <- (Month_Counts$Counts_Pi - Month_Counts$Counts_Sch)
+Month_Counts$Difference_PiNA <- (Month_Counts$Counts_Pi - Month_Counts$Counts_NA)
+Month_Counts$Difference_SchNA <- (Month_Counts$Counts_Sch - Month_Counts$Counts_NA)
+
+print(Month_Counts)
+print(rxCube(~ts_month, Line2_NA))
+
+```
+
+There might be duplicates timestamps in the Line2 data so let's do the same thing with the Pi data from before the merge.
+
+```{r Counts Month Pi2}
+
+Month_Counts2 <- rxCube(~F(ts_month), Pi2, returnDataFrame = T)
+Month_Counts2$Percentage_Pi <- round(Month_Counts2$Counts/nrow(Line2)*100,2)
+Month_Counts2 <- plyr::rename(Month_Counts2, c("Counts" = "Counts_Pi"))
+
+Month_Counts2_sch <- rxCube(~F(ts_month), Schedule)
+Month_Counts2$Counts_Sch <- Month_Counts2_sch$Counts
+Month_Counts2$Percentage_Sch <- round(Month_Counts2$Counts_Sch/nrow(Schedule)*100,2)
+
+Month_Counts2_na <- rxCube(~F(ts_month), Line2_NA)
+Month_Counts2$Counts_NA <- Month_Counts2_na$Counts
+Month_Counts2$Percentage_NA <- round(Month_Counts2$Counts_NA/nrow(Line2_NA)*100,2)
+
+Month_Counts2$Difference_PiSch <- (Month_Counts2$Counts_Pi - Month_Counts2$Counts_Sch)
+Month_Counts2$Difference_PiNA <- (Month_Counts2$Counts_Pi - Month_Counts2$Counts_NA)
+Month_Counts2$Difference_SchNA <- (Month_Counts2$Counts_Sch - Month_Counts2$Counts_NA)
+
+print(Month_Counts2)
+
+```
+
+Let's look at the original unexpanded schedule data for Line 2 now. Let's see if we can find any gaps in the data.
+
+```{r Gaps in Schedule}
+
+Gaps_Schedule <- function(dat){
+  
+  Gaps <- c()
+  Overlap <- c()
+  n <- nrow(dat) - 1
+  
+  for(i in 1:n){
+    if(dat$END_DATE[i] == dat$START_DATE[i+1]){
+      Gaps <- c(Gaps, "No")
+    }
+    else if (dat$END_DATE[i] < dat$START_DATE[i+1]){
+      Gaps <- c(Gaps, "Yes")
+    }
+    else {
+      Gaps <- c(Gaps, "Overlap")
+    }
+  }
+  
+  Gaps <- c(Gaps, "Yes")
+  dat$Gap <- Gaps
+  return(dat)
+}
+
+trunc_Time <- function(dat){
+  dat$START_DATE <- as.POSIXct(ceiling_date(dat$START_DATE, unit = "min"))
+  dat$END_DATE <- as.POSIXct(ceiling_date(dat$END_DATE, unit = "min"))
+  return(dat)
+}
+
+Sch_df <- rxImport(Schedule)
+Sch_df <- trunc_Time(Sch_df)
+Sch_df <- arrange(Sch_df, pump_station, START_DATE)
+Sch_df <- Gaps_Schedule(Sch_df)
+
+Sch_df_Yes <- subset(Sch_df, Gap == "Yes")
+Sch_df_No <- subset(Sch_df, Gap == "No")
+Sch_df_Overlap <- subset(Sch_df, Gap == "Overlap")
+
+```
+
+We have almost 7000 points in where the time intervals overlap another interval. Let's look at the Counts for each of these groups (No, yes, and overlap)
+
+```{r Time Interval Group Counts}
+
+TInt_Counts <- rxCube(~pump_station:line_segment, Sch_df, returnDataFrame = T)
+TInt_Counts <- plyr::rename(TInt_Counts, c("Counts" = "Number_of_Stations"))
+
+No_Counts <- rxCube(~pump_station, Sch_df_No)
+TInt_Counts$No <- No_Counts$Counts
+Yes_Counts <- rxCube(~pump_station, Sch_df_Yes)
+TInt_Counts$Yes <- Yes_Counts$Counts
+Overlap_Counts <- rxCube(~pump_station, Sch_df_Overlap)
+TInt_Counts$Overlap <- Overlap_Counts$Counts
+
+TInt_Counts$Percent_No <- round(TInt_Counts$No/TInt_Counts$Number_of_Stations*100,2)
+TInt_Counts$Percent_Yes <- round(TInt_Counts$Yes/TInt_Counts$Number_of_Stations*100,2)
+TInt_Counts$Percent_Overlap <- round(TInt_Counts$Overlap/TInt_Counts$Number_of_Stations*100,2)
+
+TInt_Counts <- subset(TInt_Counts, Number_of_Stations != 0)
+print(TInt_Counts)
+
+```
+

@@ -1,0 +1,479 @@
+# PART 2 - Cleansing Data
+
+Required Libraries.
+
+NOTE: If you have dplyr(Xdf) loaded, rename function from plyr won't work properly. if that is the case use plyr::rename inplace of rename.
+
+```{r Required Packages, message = FALSE}
+
+library(plyr)
+library(tidyr)
+library(lubridate)
+library(dplyrXdf)
+
+```
+
+Read xdf files into RStudio if it isn't already read in.
+
+```{r Read Files, message=FALSE}
+
+Pi2 <- RxXdfData("Line2_Raw.xdf")
+Linefill <- RxXdfData("Linefill_Raw.xdf")
+Schedule <- RxXdfData("Schedule_Raw.xdf")
+
+```
+
+Function we'll use to easily remove and rename xdf files at the end of each chunk of code if needed.
+
+```{r change Xdf Function}
+
+change_Xdf <- function(starting_filename = "Line2.xdf", final_filename = starting_filename, n = 1){
+  
+  xdf <- starting_filename
+  xdf_name <- substr(xdf, 1, nchar(xdf) - 4)
+  xdf_ext <- ".xdf"
+  i <- 0
+  
+  while (i < n){
+    if (i == 0){
+      file.remove(xdf)
+      i <- i + 1
+    }
+    else {
+      xdf_str <- paste0(xdf_name,i,xdf_ext)
+      file.remove(xdf_str)
+      i <- i + 1
+    }
+  }
+  
+  xdf_str <- paste0(xdf_name,i,xdf_ext)
+  file.rename(xdf_str, final_filename)
+  return(RxXdfData(final_filename))
+  
+}
+
+```
+
+# Pi Tag Data
+
+Remove unnecessary columns and tags by specifying which columns and tags we will keep going forward.
+
+```{r Pi - Remove Columns, message=FALSE}
+
+vars <- c("LogTime","Seg", "Site", "TagType", "ValType", "ValInt", "ValFlt", "ValDig", "IsGood", "LogMonth", "LogYear")
+tags <- c("HHPU", "KW", "Discharge_Pressure", "Flow_Rate", "Suction_Pressure", "DRA",
+          "Pump_Status_1", "Pump_Status_2", "Pump_Status_3", "Pump_Status_4", "Pump_Status_5")
+
+rxDataStep(inData = Pi2, outFile = "Line2.xdf", overwrite = T, varsToKeep = vars)
+rxDataStep(inData = "Line2.xdf", outFile = "Line21.xdf", rowSelection = (TagType %in% t),
+           transformObjects = list(t = tags), rowsPerRead = 10000000)
+Pi2 <- change_Xdf("Line2.xdf", n = 1)
+
+```
+
+Create Value column to replace ValInt, ValFlt, and ValDig. Since ValDig is a character character, Value will need to be a character column otherwise this won't work so need to convert ValType and ValFlt to character. Since xdf is annoying, instead of creating a new column value, we'll replace the elements of ValType with the values we need and rename that column later. Once we've created this new column, we'll need to remove the Val... columns atherwards, otherwise the using spread in the next step won't work properly. We also need to keep IsGood for one more step.
+
+```{r Pi - Create Value, message=FALSE}
+
+create_Value <- function(dat){
+  dat$Value <- ifelse(dat$ValType == "int", as.character(dat$ValInt),
+                      ifelse(dat$ValType == "float", as.character(dat$ValFlt), dat$ValDig))
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line21.xdf", overwrite = T, transformFunc = create_Value)
+rxDataStep("Line21.xdf", outFile = "Line22.xdf", varsToDrop = c("ValType", "ValInt", "ValFlt", "ValDig"))
+Pi2 <- change_Xdf("Line2.xdf", n = 2)
+
+```
+
+We had issues with the DRA tag for this line so let's fix these. One of the issues was a lot of IsGood = 0 for DRA tags. Let's fix this now before we remove IsGood column. We will set ValFlt to zero for each of these points and IsGood to 1. We'll then filter out the rest of the rows where IsGood = 0 and drop that column.
+
+```{r DRA Fix}
+
+fix_DRA_bad <- function(dat){
+  dat$Value <- ifelse((dat$TagType == "DRA") & (dat$IsGood == 0), "0", dat$Value)
+  dat$IsGood <- ifelse((dat$TagType == "DRA") & (dat$IsGood == 0), as.integer(1), as.integer(dat$IsGood))
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line21.xdf", transformFunc = fix_DRA_bad)
+rxDataStep(inData = "Line21.xdf", outFile = "Line22.xdf", rowSelection = (IsGood == 1), varsToDrop = c("IsGood"))
+Pi2 <- change_Xdf("Line2.xdf", n = 2)
+
+```
+
+Now we need to pivot the data so that each tag is it's own column the object in value corresponding to that tag will be the value in the column.
+
+We can do this easily if we want to load the data into dataframe in memory. We will use the function spread from the tidyr package.
+
+If you are having trouble loading data into memory due to the massive amount of Pi tags, see this [file](http://enbze2elpde-ghe.eastus2.cloudapp.azure.com/wuerstlk/Line-2-Power-Estimator---Full-Year-Data/blob/master/Alternative%20Method%20of%20Pivoting%20Data.Rmd)
+
+```{r Pi - Pivot Pi data, message = FALSE}
+
+# Pivotng by loading data into memory all at once
+#Pi2_df <- rxImport(Pi2)
+#Pi2_df <- spread(Pi2_df, TagType, Value)
+#Pi2_df <- Pi2_df[c(1,2,3,4,5,8,6,16,7,9,10,11,12,13,14,15)]
+#rxImport(Pi2_df, outFile = "Line2_AfterPivot.xdf")
+
+# Pivoting by loading data into memory a month at a time
+Pi2_df <- rxImport(Pi2, rowSelection = (LogMonth == 1))
+Pi2_df <- spread(Pi2_df, TagType, Value)
+Pi2_df <- Pi2_df[c(1,2,3,4,5,8,6,16,7,9,10,11,12,13,14,15)]
+rxImport(Pi2_df, outFile = "Line2_AfterPivot.xdf")
+for(i in 2:12){
+  Pi2_df <- rxImport(Pi2, rowSelection = (LogMonth == t), transformObjects = list(t = i))
+  Pi2_df <- spread(Pi2_df, TagType, Value)
+  Pi2_df <- Pi2_df[c(1,2,3,4,5,8,6,16,7,9,10,11,12,13,14,15)]
+  rxImport(Pi2_df, outFile = "Line2_AfterPivot.xdf", overwrite = T, append = T)
+}
+
+remove(Pi2_df)
+file.rename("Line2.xdf", "Line2_UnPivot.xdf")
+Pi2 <- RxXdfData("Line2_AfterPivot.xdf")
+
+```
+
+Need to fill in the missing DRA and discharge pressure values with 0's. NOTE: this solution will screw up differential calculations later on but that is not a big deal.
+
+```{r fix Missing Values}
+
+fix_Missing <- function(dat){
+  dat$DRA <- ifelse(is.na(dat$DRA) == TRUE, "0", dat$DRA)
+  dat$Discharge_Pressure <- ifelse(is.na(dat$Discharge_Pressure) == TRUE, "0", dat$Discharge_Pressure)
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line2.xdf", transformFunc = fix_Missing)
+Pi2 <- RxXdfData("Line2.xdf")
+
+```
+
+Split Segment 2-CM-CR into 2-CM-GF and 2-GF-CR
+
+```{r Split Segment}
+
+split_Seg <- function(dat){
+  dat$Seg <- ifelse(dat$Site %in% c("CM", "SP", "LP", "XP"), "2-CM-GF",
+                    ifelse(dat$Site %in% c("GF", "PL", "DN", "VG"), "2-GF-CR", dat$Seg))
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line21.xdf", transformFunc = split_Seg)
+Pi2 <- change_Xdf("Line2.xdf", n = 1)
+
+```
+
+Remove Inactive stations. For this line the inactive stations are PW and IV. NOTE: this step can be ignored as we are not doing anything to fix a lot of the NAs which will pop up for these two stations. If we do ignore this step, the stations will be removed when we remove all rows with missing NAs.
+
+```{r Remove Stations}
+
+rxDataStep(Pi2, outFile = "Line21.xdf", rowSelection = !(Site %in% c("IV", "PW")))
+Pi2 <- change_Xdf("Line2.xdf", n = 1)
+
+```
+
+Convert the column types from characters to their proper types.
+* LogTime: POSIXct(format = "%Y-%m-%dT%H:%M:%S", tz = "MST")
+* Seg, Site, LogMonth, 7 LogYear: factor
+* HHPU, Flow, KW, Discharge, Suction, DRA: numeric
+* Pump_Status_1:5: factor
+
+We will create a function to do this and pass it to rxDataStep. There was an issue with converting to factors due to how the data chunked. There is two solutions around this. The first is to load the data into memory and run the function onto that the in memory dataframe. The 2nd solution is to remove every as.factor line in the conv_Columns function and running this function through rxDataStep. After that use rxFactors to convert the character columns to factors.
+
+```{r Pi - Convert Types, message = FALSE}
+
+conv_Columns <- function(dat){
+  dat$LogTime <- as.POSIXct(dat$LogTime, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+  dat$Seg <- as.factor(dat$Seg)
+  dat$Site <- as.factor(dat$Site)
+  dat$LogMonth <- as.factor(dat$LogMonth)
+  dat$LogYear <- as.factor(dat$LogYear)
+  dat$HHPU <- as.numeric(dat$HHPU)
+  dat$KW <- as.numeric(dat$KW)
+  dat$Flow_Rate <- as.numeric(dat$Flow_Rate)
+  dat$Discharge_Pressure <- as.numeric(dat$Discharge_Pressure)
+  dat$Suction_Pressure <- as.numeric(dat$Suction_Pressure)
+  dat$DRA <- as.numeric(dat$DRA)
+  dat$Pump_Status_1 <- as.factor(dat$Pump_Status_1)
+  dat$Pump_Status_2 <- as.factor(dat$Pump_Status_2)
+  dat$Pump_Status_3 <- as.factor(dat$Pump_Status_3)
+  dat$Pump_Status_4 <- as.factor(dat$Pump_Status_4)
+  dat$Pump_Status_5 <- as.factor(dat$Pump_Status_5)
+  return(dat)
+}
+
+# Load data into memory
+Pi2_df <- rxImport(Pi2)
+Pi2_df <- conv_Columns(Pi2_df)
+#rxImport(Pi2_df, outFile = "Line21.xdf")
+#remove(Pi2_df)
+#Pi2 <- change_Xdf("Line2.xdf", n = 1)
+
+# Using rxFactors, remember to remove every as.factor row in the function above before running this.
+#col_factors <- c("Seg", "Site", "LogMonth", "LogYear", "Pump_Status_1" , "Pump_Status_2" , "Pump_Status_3" ,
+#                 "Pump_Status_4" , "Pump_Status_5")
+#
+#rxDataStep(Pi2, outFile = "Line21.xdf", overwrite = T, transformFunc = conv_Columns)
+#rxFactors("Line21.xdf", outFile = "Line22.xdf", factorInfo = col_factors)
+#Pi2 <- change_Xdf("Line2.xdf", n = 2)
+
+```
+
+Create number of pumps on and total pumps variable. This almost works with xdf files but it doesn't convert NA values to zero so it won't properly sum up the pump statuses and will return Na values for NumPumpsOn. However, if you load the data into memory it works fine. Data should still be loaded into memory from previous step.
+
+Once these two columns are created, we'll remove the rows which still contain Na values and the pump status columns since we don't need them anymore. The pump status columns are removed within the function.
+
+NOTE: for reading convience, instead of using the column label, I've used the index in some instances. The indices are:
+* 12: Pump_Status_1
+* 13: Pump_Status_2
+* 14: Pump_Status_3
+* 15: Pump_Status_4
+* 16: Pump_Status_5
+* 17: Pump_Status_N1
+* 18: Pump_Status_N2
+* 19: Pump_Status_N3
+* 20: Pump_Status_N4
+* 21: Pump_Status_N5
+The first time we used indices, we are replacing NA values with 0 for the pump_status_N columns. The second time the indices are used, we are using the other indices (not the pump status ones) to state which columns we want to keep.
+
+```{r Pi - Create Pump Vars, message = FALES}
+
+create_PumpVars <- function(dat, on_status = c("ON", "IN SEQUENCE ON")){
+  
+  dat$Pump_Status_N1 <- ifelse(dat$Pump_Status_1 %in% on_status, 1, 0)
+  dat$Pump_Status_N2 <- ifelse(dat$Pump_Status_2 %in% on_status, 1, 0)
+  dat$Pump_Status_N3 <- ifelse(dat$Pump_Status_3 %in% on_status, 1, 0)
+  dat$Pump_Status_N4 <- ifelse(dat$Pump_Status_4 %in% on_status, 1, 0)
+  dat$Pump_Status_N5 <- ifelse(dat$Pump_Status_5 %in% on_status, 1, 0)
+  
+  dat[c(17,18,19,20,21)][is.na(dat[c(17,18,19,20,21)])] <- 0
+  dat$NumPumpsOn <- dat$Pump_Status_N1+dat$Pump_Status_N2+dat$Pump_Status_N3+dat$Pump_Status_N4+dat$Pump_Status_N5
+  
+  dat$TotalPumps <- ifelse(is.na(dat$Pump_Status_1) == TRUE, 0,
+                           ifelse(is.na(dat$Pump_Status_2) == TRUE, 1,
+                                  ifelse(is.na(dat$Pump_Status_3) == TRUE, 2,
+                                         ifelse(is.na(dat$Pump_Status_4) == TRUE, 3,
+                                                ifelse(is.na(dat$Pump_Status_5) == TRUE, 4, 5)))))
+  
+  
+  dat <- dat[c(1:11,22,23)]
+  return(dat)
+}
+
+#Pi2_df <- rxImport(Pi2)
+Pi2_df <- create_PumpVars(Pi2_df, c("ON", "IN SEQUENCE ON"))
+rxImport(Pi2_df, outFile = "Line21.xdf", overwrite = T,
+         colInfo = list(NumPumpsOn = list(type = "factor", levels = c(as.character(0:6))),
+                        TotalPumps = list(type = "factor", levels = c(as.character(0:6)))))
+#rxDataStep("Line21.xdf", outFile = "Line22.xdf", removeMissings = T, overwrite = T)
+remove(Pi2_df)
+Pi2 <- change_Xdf("Line2.xdf", n = 1)
+
+```
+
+Let's fix missing KW and Discharge_Pressure columns. For missing kw, we'll calculate from hhpu, for missing discharge, we'll have to fill in with 0.
+
+```{r fix Missing KW and Discharge}
+
+fix_Missing <- function(dat){
+  dat$KW <- ifelse(is.na(dat$KW) == TRUE, dat$HHPU*0.7457, dat$KW)
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line21.xdf", transformFunc = fix_Missing)
+Pi2 <- change_Xdf("Line2.xdf", n = 1)
+
+```
+
+Create the datetime columns we need; Day of the Week, Day, and Hour. Before we do this, we will need to convert the timezones from UTC to MST and drop the LogYear and LogMonth columns as those will now be incorrect. Once this is done, we will create these features as well as recreate a month feature. The last line of the code is optional. It is there to arrange the data by first timestamp, then segment, and lastly station.
+
+NOTE: I have not tested this chunk so there might be issues. Due to chunking issues I've previously had with respect to LogMonth I have specified the levels. This way hopefully R doesn't get confused.
+
+```{r Pi - Create DateTime Vars, message = FALSE}
+
+create_DatetimeVars <- function(dat){
+  dat$LogTime <- with_tz(dat$LogTime, tzone = "MST")
+  dat$Month <- factor(month(dat$LogTime), levels = as.character(1:12))
+  dat$WeekDay <- as.factor(weekdays(dat$LogTime, abbreviate = T))
+  dat$Day <- as.factor(day(dat$LogTime))
+  dat$Hour <- as.factor(hour(dat$LogTime))
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line21.xdf", overwrite = T, transformFunc = create_DatetimeVars,
+           transformPackages = "lubridate", varsToDrop = c("LogMonth", "LogYear"))
+Pi2 <- change_Xdf("Line2.xdf", n = 1)
+
+Pi2 <- Pi2 %>% arrange(Seg, Site, LogTime)
+persist(Pi2, "Line2.xdf")
+Pi2 <- RxXdfData("Line2.xdf")
+
+```
+
+Create Differential column and remove discharge and suction.
+
+```{r Pi - Create Differential, message = FALSE}
+
+rxDataStep(Pi2, outFile = "Line21.xdf", overwrite = T,
+           transforms = list(differential = Discharge_Pressure - Suction_Pressure))
+rxDataStep("Line21.xdf", outFile = "Line22.xdf", varsToDrop = c("Discharge_Pressure", "Suction_Pressure"))
+Pi2 <- change_Xdf("Line2.xdf", n = 2)
+
+```
+
+Rename Columns to match up with naming convention.
+
+NOTE: If dplyr is loaded replace rename with plyr::rename
+
+```{r Pi - Rename, message=FALSE}
+
+plyr::rename(Pi2, c("LogTime" = "ts_pi", "Seg" = "line_segment", "Month" = "ts_month", "Flow_Rate" = "flow_rate",
+                    "DRA" = "dra", "HHPU" = "hhpu", "KW" = "kw", "NumPumpsOn" = "pump_status_on", "Hour" = "ts_hour",
+                    "TotalPumps" = "pump_total", "WeekDay" = "ts_dow", "Day" = "ts_day", "Site" = "pump_station",
+                    "differential" = "differential"))
+
+```
+
+Calculate the Difference between discharge and suction pressure and call it Differential. Using Differential, calculate what the theoretical values of Flow, HHPU, and KW should be. Calculate the percentage difference between the observed and calculated values. This is purely for comparison and data exploration purposes.
+
+```{r Pi - Calculate Theoreticals, message=FALSE}
+
+#rxDataStep(Pi2, outFile = "Line2_Theo.xdf", overwrite = T,
+#          transforms = list(hhpuc = differential*flow_rate*(23.8095238095238/3.785/2449),
+#                            hhpu_delta = (hhpuc - hhpu)*100/hhpu,
+#                            kwc = hhpuc*0.7457,
+#                            kw_delta = (kwc - kw)*100/kw,
+#                            kwse = (kwc/kw)*100,
+#                            flowc = hhpuc/(differential*(23.8095238095238/3.785/2449)),
+#                            flow_delta = (flowc - flow_rate)*100/flow_rate))
+#Pi2_Theo <- RxXdfData("Line2_Theo.xdf")
+
+```
+
+# Schedule and Linefill Data
+
+Convert start_date and end_date from factor to POSIXct datetime and remove the unecessary columns. Rename column ACTIVITY_TYPE to ACTIVITY_TYPE_CODE in the linefill data.
+
+NOTE: If dplyrXdf is loaded, use plyr::rename inplace of rename
+
+```{r Sch & Lf - Convert Datetime, message = FALSE}
+
+conv_time_sch <- function(dat) {
+  dat$START_DATE <- as.POSIXct(dat$START_DATE, format = "%d%b%Y %H:%M:%S", tz = "MST")
+  dat$END_DATE <- as.POSIXct(dat$END_DATE, format = "%d%b%Y %H:%M:%S", tz = "MST")
+  return(dat)
+}
+
+rxDataStep(Schedule, outFile = "Schedule.xdf", overwrite = T, transformFunc = conv_time_sch,
+           varsToKeep = c("ACTIVITY_TYPE_CODE", "Commodity_Group", "DESTINATION_FCLTY_NAME", "START_DATE",
+                          "END_DATE", "DESTINATION_SITE_CALL_NAME", "OBSERVED_VOL", "OBSERVED_IND"))
+Schedule <- RxXdfData("Schedule.xdf")
+
+conv_time_line <- function(dat) {
+  dat$START_DATE <- as.POSIXct(dat$START_DATE, format = "%d-%b-%Y %H.%M.%S", tz = "MST")
+  dat$END_DATE <- as.POSIXct(dat$END_DATE, format = "%d-%b-%Y %H.%M.%S", tz = "MST")
+  return(dat)
+}
+
+rxDataStep(Linefill, outFile = "Linefill.xdf", overwrite = T, transformFunc = conv_time_line,
+           varsToKeep = c("ACTIVITY_TYPE", "COMMODITY_GROUP", "DESTINATION_FCLTY_NAME", "START_DATE",
+                          "END_DATE", "DESTINATION_SITE_CALL_NAME", "OBSERVED_VOL", "OBSERVED_IND"))
+Linefill <- RxXdfData("Linefill.xdf")
+plyr::rename(Linefill, c("ACTIVITY_TYPE" = "ACTIVITY_TYPE_CODE", "COMMODITY_GROUP" = "Commodity_Group"))
+
+```
+
+Union Schedule and and Linefill data together by row
+
+```{r Sch & Lf - Union Schedule & Linefill, message = FALSE}
+
+rxMerge(inData1 = Schedule, inData2 = Linefill, outFile = "Schedule_Linefill_Complete.xdf", type = "union", overwrite=T)
+Schedule <- RxXdfData("Schedule_Linefill_Complete.xdf")
+
+```
+
+We need to blow up the schedule and linefill into minute intervals.
+
+Since some of the linefill data has large intervals we will filter out all the data not in line 2 to make it easier as well as filtering out all data where start date is after end date.
+
+```{r Sch & Lf - Filter for Line 2, message = FALSE}
+
+segment_filter <- c("2-CM-GF", "2-GF-CR","2-QU-CM","2-KB-SB","2-YP-KB","2-CR-PR","2-EP-YP")
+
+rxDataStep(Schedule, outFile = "Schedule_Linefill2.xdf", overwrite = T, transformObjects = list(sg = segment_filter),
+           rowSelection = (DESTINATION_FCLTY_NAME %in% sg & START_DATE <= END_DATE))
+Schedule <- RxXdfData("Schedule_Linefill2.xdf")
+
+```
+
+To expand the start-end date intervals by minute we will load the data into a dataframe and use plyr. To get ddply to work we need to create a unique key column first. The linefill data is to the second so we will also need to truncate the timestamps down to the minute. Will need package lubridate to do this.
+
+```{r Expand Time, message=FALSE}
+
+Schedule_df <- rxImport(Schedule)
+Schedule_df$id <- seq(1,nrow(Schedule_df))
+Schedule_df <- ddply(Schedule_df, .(id, ACTIVITY_TYPE_CODE, Commodity_Group, DESTINATION_FCLTY_NAME,
+                                    DESTINATION_SITE_CALL_NAME, OBSERVED_VOL, OBSERVED_IND),
+                     transform, TIMESTAMP=seq(START_DATE, END_DATE, by="min"))
+
+trunc_Time <- function(dat){
+  dat$TIMESTAMP <- as.POSIXct(ceiling_date(dat$TIMESTAMP, unit = "min"))
+  return(dat)
+}
+
+rxImport(Schedule_df, outFile = "Schedule_Linefill21.xdf", overwrite = T, varsToDrop = c("id","START_DATE","END_DATE"),
+         transformFunc = trunc_Time, transformPackages = "lubridate")
+remove(Schedule_df)
+Schedule <- change_Xdf("Schedule_Linefill2.xdf", n = 1)
+
+```
+
+Now we can join the schedule data onto the Pi data via a left outer join on ts_pi, line_segment, and pump_station. To do this, first we need to rename the columns in the schedule data to match the columns in the Pi data. We'll also rename the other columns to match naming conventions.
+
+```{r Rename Schedule, message = FALSE}
+
+plyr::rename(Schedule, c("ACTIVITY_TYPE_CODE" = "activity_code", "Commodity_Group" = "commodity_group",
+                         "DESTINATION_FCLTY_NAME" = "line_segment", "DESTINATION_SITE_CALL_NAME" = "pump_station",
+                         "OBSERVED_VOL" = "observed_vol", "OBSERVED_IND" = "observed_ind", "TIMESTAMP" = "ts_pi"))
+
+```
+
+Now we can join the Pi and schedule data. We will join on the columns: line_segment, pump_station, and ts_pi. For simplicity, we'll need to convert line_segment and pump_station to characters so that we don't have to deal with different levels in either dataframes. We'll the columns convert them back to factors once the merge is complete.
+
+```{r Join Pi and Schedule, message = FALSE}
+
+convert_Character <- function(dat){
+  dat$line_segment <- as.character(dat$line_segment)
+  dat$pump_station <- as.character(dat$pump_station)
+  return(dat)
+}
+
+rxDataStep(Schedule, outFile = "Sch1.xdf", transformFunc = convert_Character, overwrite = T)
+rxDataStep(Pi2, outFile = "Line21.xdf", transformFunc = convert_Character, overwrite = T)
+
+rxMerge(inData1 = "Line21.xdf", inData2 = "Sch1.xdf", outFile = "Pi_Schedule2.xdf", type = "left",
+        matchVars = c("line_segment", "pump_station", "ts_pi"))
+file.remove("Sch1.xdf")
+file.remove("Line21.xdf")
+
+rxFactors("Pi_Schedule2.xdf", outFile = "Pi_Schedule21.xdf", overwrite = T,
+          factorInfo = c("line_segment", "pump_station"))
+Line2 <- change_Xdf("Pi_Schedule2.xdf", n = 1)
+
+```
+
+###NOTE: This is an optional step
+Let's remove all the rows with Na values
+
+```{r Remove NA rows, message=FALSE}
+
+#rxDataStep(Line2, outFile = "Pi_Schedule1.xdf", removeMissings = T)
+#file.remove("Pi_Schedule.xdf")
+#file.rename("Pi_Schedule1.xdf", "Pi_Schedule.xdf")
+#Line2 <- RxXdfData("Pi_Schedule.xdf")
+
+```
+
+Now it's time for model building

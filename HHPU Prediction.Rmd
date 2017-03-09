@@ -1,0 +1,105 @@
+# Model Prediction
+
+Required Packages
+
+```{r Required Packages}
+
+library(plyr)
+
+```
+
+Load models from Rdata file
+
+```{r Load Models}
+
+load("trained_models_NoSch.Rdata")
+load("trained_pumps_on_models.Rdata")
+
+hhpu_model <- trained_models$DForest
+pumps_on_model <- PumpsOn_Models$DTree
+
+```
+
+Load the input data. Replace "Line2.xdf" with whatever the input file is. Data headers should be:
+* ts_pi (timestamp)
+* flow_rate
+* dra
+* pump_station
+* line_segment
+* ts_month
+* ts_day
+* ts_hour
+* ts_dow
+
+```{r Load Data}
+
+Line2_Pred <- RxXdfData("Line2_Pred_Test.xdf")
+
+```
+
+Predict the number of pumps on. The input data for this model is:
+* flow_rate (sim_rate).
+* pump_station.
+
+```{r Predict Pumps On}
+
+keep_vars <- names(Line2_Pred)
+Line2_Pred <- rxPredict(pumps_on_model, Line2_Pred, outData = "Line2_pumps_on_pred.xdf", extraVarsToWrite = keep_vars)
+plyr::rename(pumps_on_pred, c("0_prob" = "prob_0", "1_prob" = "prob_1", "2_prob" = "prob_2", "3_prob" = "prob_3",
+                              "4_prob" = "prob_4", "5_prob" = "prob_5", "6_prob" = "prob_6"))
+
+predict_PumpsOn <- function(dat){
+  dat$pump_status_on <- round(0*dat$prob_0 + 1*dat$prob_1 + 2*dat$prob_2 + 3*dat$prob_3 + 
+                               4*dat$prob_4 + 5*dat$prob_5 + 6*dat$prob_6)
+  dat$pump_status_on <- factor(dat$pump_status_on, levels = c(as.character(0:6)))
+  return(dat)
+}
+
+rxDataStep(Line2_Pred, outFile = "Line2_pumps_on_pred1.xdf", transformFunc = predict_PumpsOn)
+rxDataStep("Line2_pumps_on_pred1.xdf", outFile = "Line2_pumps_on_pred2.xdf",
+           varsToDrop = c("prob_0", "prob_1", "prob_2", "prob_3", "prob_4", "prob_5", "prob_6"))
+file.remove(c("Line2_pumps_on_pred.xdf", "Line2_pumps_on_pred1.xdf"))
+file.rename("Line2_pumps_on_pred2.xdf", "Line2_pumps_on_pred.xdf")
+
+```
+
+The header outfile is:
+* ts_pi (timestamp)
+* flow_rate
+* dra
+* pump_station
+* line_segment
+* ts_month
+* ts_day
+* ts_hour
+* ts_dow
+* pump_total
+* pump_status_on
+
+Now to predict hhpu. The previous header output is this chunks header input. We can calculate KW here as well.
+
+```{r Predict HHPU}
+
+keep_vars <- names(Line2_Pred)
+rxPredict(hhpu_model, Line2_Pred, outData = "Line2_pumps_on_pred1.xdf", extraVarsToWrite = keep_vars)
+rxDataStep("Line2_pumps_on_pred1.xdf", outFile = "Line2_pumps_on_pred2.xdf", transforms = list(kw_Pred = hhpu_Pred*0.7457))
+file.remove(c("Line2_pumps_on_pred.xdf", "Line2_pumps_on_pred1.xdf"))
+file.rename("Line2_pumps_on_pred2.xdf", "Line2_pumps_on_pred.xdf")
+
+```
+
+The final header output is:
+* ts_pi (timestamp)
+* flow_rate
+* dra
+* pump_station
+* line_segment
+* ts_month
+* ts_day
+* ts_hour
+* ts_dow
+* pump_total
+* pump_status_on
+* hhpu_Pred
+* kw_Pred
+

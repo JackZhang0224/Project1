@@ -1,0 +1,466 @@
+# Importing and Cleansing Data from Storage
+
+Required Libraries.
+
+NOTE: If you have dplyr(Xdf) loaded, rename from plyr won't work properly. if that is the case use plyr::rename inplace of rename.
+
+```{r}
+
+library(plyr)
+library(tidyr)
+library(lubridate)
+
+```
+
+Due to the bz2 file type of the Pi tag files, there are issues importing data straight from Azure ML. However, due to the relatively small size of the files we can upload the files directly into storage, convert the files into an xdf file, and then remove the files from storage.
+
+To do this:
+1. Go to blob storage and download the files you need.
+2. Upload them into storage
+
+Import Pi tags from storage. To do this we need to read the bz2 files as csv files before we import them into an xdf.
+
+```{r}
+
+Line2 <- rxImport(inData = read.csv("Line2_Month01_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T)
+file.remove("Line2_Month01_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month02_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month02_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month03_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month03_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month04_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month04_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month05_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month05_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month06_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month06_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month07_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month07_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month08_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month08_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month09_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month09_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month10_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month10_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month11_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month11_2016.csv.bz2")
+Line2 <- rxImport(inData = read.csv("Line2_Month12_2016.csv.bz2", stringsAsFactors = F, header = T),
+                  outFile = "Line2.xdf", overwrite = T, append = T)
+file.remove("Line2_Month12_2016.csv.bz2")
+
+```
+
+Remove unnecessary columns by specifying which columns we will keep going forward.
+
+```{r}
+
+vars <- c("LogTime","Seg", "Site", "TagType", "ValType", "ValInt", "ValFlt", "ValDig", "IsGood", "LogMonth", "LogYear")
+
+rxDataStep(inData = Line2, outFile = "Line21.xdf", overwrite = T, varsToKeep = vars)
+file.remove("Line2.xdf")
+file.rename("Line21.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Remove unecessary Pi tags and drop IsGood row. When I ran this code, I separated both steps into 2 different rxDataStep functions. This should work but if not just remove varsToDrop from the rxDataStep function and add a new rxDataStep with varsToDrop and no row selection.
+
+NOTE: You will need to add Pump_Status_6 here if applicable
+
+```{r}
+
+tags <- c("HHPU", "KW", "Discharge_Pressure", "Flow_Rate", "Suction_Pressure", "DRA",
+          "Pump_Status_1", "Pump_Status_2", "Pump_Status_3", "Pump_Status_4", "Pump_Status_5")
+
+rxDataStep(inData = Line2, outFile = "Line21.xdf", rowSelection = (IsGood == 1) & (TagType %in% t),
+           transformObjects = list(t = tags), overwrite = TRUE, varsToDrop = c("IsGood"))
+file.remove("Line2.xdf")
+file.rename("Line21.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Create Value column to replace ValInt, ValFlt, and ValDig. Since ValDig is a character character, Value will need to be a character column otherwise this won't work so need to convert ValType and ValFlt to character. Since xdf is annoying, instead of creating a new column value, we'll replace the elements of ValType with the values we need and rename that column later.
+
+The following was an attempt to do this with functions however the it only works if you load the data into local memory as a dataframe. Skip to the next chunk to see how it can work for xdf format.
+
+```{r}
+
+create_Value <- function(dat){
+  dat$Value <- ifelse(dat$ValType == "int", as.character(dat$ValInt),
+                      ifelse(dat$ValType == "float", as.character(dat$ValFlt), dat$ValDig))
+  return(dat)
+}
+
+
+rxDataStep(Line2, outFile = "Line21.xdf", overwrite = T, transformFunc = create_Value)
+file.remove("Line2.xdf")
+file.rename("Line21.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+To create a value column using xdf format we need to split the xdf file into 3 files; one for each type of value (int, float, and digital). for int and float, we create a new column, Value, which will be the same as ValInt/Flt but the value will be a character, not a numeric. We then drop the 4 Val columns. For digital since it is already a character column, we just rename ValDig as Value and drop the other 3 Val columns. If we do this we will need to reorder the columns which will be done by loading the xdf into a local dataframe. If you don't want to do this, then do the exact same thing for digital you did for the other two but without the as.character call.
+
+Once we created our 3 separate files, we need to union them back together. Value needs to be moved to the end of Line2_dig for the final merge to work.
+
+Note: I originally ran the code without the round function for flt so I don't know if that part of the code will work. If it doesn't, just remove the round and it should work. The reason I added it is because when you convert the float to a character it stops rounding and you get 10 decimal places instead of 3. It's not an issue, just makes the Value column cleaner.
+
+```{r}
+
+Line2_int <- rxDataStep(Line2, outFile = "Line2_int.xdf", rowSelection = (ValType == "int"), overwrite = T,
+                        transforms = list(Value = as.character(ValInt)))
+rxDataStep(Line2_int, outFile = "Line2_int1.xdf", overwrite = T, varsToDrop = c("ValType","ValInt","ValFlt","ValDig"))
+file.remove("Line2_int.xdf")
+file.rename("Line2_int1.xdf","Line2_int.xdf")
+Line2_int <- RxXdfData("Line2_int.xdf")
+
+Line2_flt <- rxDataStep(Line2, outFile = "Line2_flt.xdf", rowSelection = (ValType == "float"), overwrite = T,
+                        transforms = list(Value = as.character(round(ValFlt,3))))
+rxDataStep(Line2_flt, outFile = "Line2_flt1.xdf", overwrite = T, varsToDrop = c("ValType","ValInt","ValFlt","ValDig"))
+file.remove("Line2_flt.xdf")
+file.rename("Line2_flt1.xdf","Line2_flt.xdf")
+Line2_flt <- RxXdfData("Line2_flt.xdf")
+
+Line2_dig <- rxDataStep(Line2, outFile = "Line2_dig.xdf", rowSelection = (ValType == "digital"), overwrite = T)
+rename(Line2_dig,c("ValDig"="Value"))
+rxDataStep(Line2_dig, outFile = "Line2_dig1.xdf", varsToDrop = c("ValType","ValInt","ValFlt"))
+file.remove("Line2_dig.xdf")
+file.rename("Line2_dig1.xdf","Line2_dig.xdf")
+Line2_dig <- RxXdfData("Line2_dig.xdf")
+
+Line21 <- rxMerge(inData1 = Line2_int, inData2 = Line2_flt, outFile = "Line21.xdf", type = "union")
+file.remove("Line2.xdf")
+file.remove("Line2_int.xdf")
+file.remove("Line2_flt.xdf")
+
+dig <- rxImport(Line2_dig)
+dig <- dig[c(1,2,3,4,6,7,5)]
+Line2_dig <- rxImport(inData = dig, outFile = "Line2_dig1.xdf", overwrite = T)
+file.remove("Line2_dig.xdf")
+file.rename("Line2_dig1.xdf","Line2_dig.xdf")
+Line2_dig <- RxXdfData("Line2_dig.xdf")
+remove(dig)
+
+rxMerge(inData1 = Line21, inData2 = Line2_dig, outFile = "Line22.xdf", type = "union")
+file.remove("Line21.xdf")
+file.remove("Line2_dig.xdf")
+file.rename("Line22.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Now we need to pivot the data. There is 2 ways for us to do this:
+1.We can do this easily if we want to load the data into dataframe in memory but data is 140 million rows right now so that might not be a good idea.
+2. To work strictly with xdf files we need to create 11 different xdf files, one for each tag type. For each tag, we drop the tag type column and rename the value column as the tag for that file. NOTE: This should get rid of the na rows.
+
+We need to remove the rows with na's in any of the columns except the Pump_Status ones. If you use the first way we 
+will have to do this later. If you go the 2nd direction, it should do this automatically.
+
+NOTE: either way, add Pump_Status_6 if applicable here
+
+1st Way: Loading data into memory
+
+```{r}
+
+Line2_df <- rxImport(Line2)
+Line2_df <- spread(Line2_df, TagType, Value)
+Line2_df <- Line2_df[c(1,2,3,4,5,8,6,16,7,9,10,11,12,13,14,15)]
+
+rxImport(Line2_df, outFile = "Line2.xdf", overwrite = T)
+Line2 <- RxXdfData("Line2.xdf")
+remove(Line2_df)
+
+```
+
+2nd Way: Pivoting strictly in xdf files
+
+```{r}
+
+Line2_HHPU <- rxDataStep(inData = Line2, outFile = "Line2HHPU.xdf", rowSelection = (TagType == "HHPU"), overwrite = T)
+rename(Line2_HHPU,c("Value"="HHPU"))
+Line2t <- rxDataStep(Line2_HHPU, outFile = "Line2t.xdf", varsToDrop = c("TagType"), overwrite=T)
+file.remove("Line2HHPU.xdf")
+
+Line2_KW <- rxDataStep(inData = Line2, outFile = "Line2KW.xdf", rowSelection = (TagType == "KW"), overwrite = T)
+rename(Line2_KW,c("Value"="KW"))
+rxMerge(inData1 = Line2t, inData2 = Line2_KW, outFile = "Line2t1.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t.xdf")
+file.remove("Line2KW.xdf")
+Line2t <- RxXdfData("Line2t1.xdf")
+
+Line2_Flow <- rxDataStep(inData = Line2, outFile = "Line2Flow.xdf", rowSelection = (TagType == "Flow_Rate"),
+                         overwrite = T)
+rename(Line2_Flow,c("Value"="Flow_Rate"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Flow, outFile = "Line2t2.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t1.xdf")
+file.remove("Line2Flow.xdf")
+Line2t <- RxXdfData("Line2t2.xdf")
+
+Line2_Dis <- rxDataStep(inData = Line2, outFile = "Line2Dis.xdf",
+                        rowSelection = (TagType == "Discharge_Pressure"), overwrite = T)
+rename(Line2_Dis,c("Value"="Discharge_Pressure"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Dis, outFile = "Line2t3.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t2.xdf")
+file.remove("Line2Dis.xdf")
+Line2t <- RxXdfData("Line2t3.xdf")
+
+Line2_Suc <- rxDataStep(inData = Line2, outFile = "Line2Suc.xdf", rowSelection = (TagType == "Suction_Pressure"),
+                        overwrite = T)
+rename(Line2_Suc,c("Value"="Suction_Pressure"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Suc, outFile = "Line2t4.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t3.xdf")
+file.remove("Line2Suc.xdf")
+Line2t <- RxXdfData("Line2t4.xdf")
+
+Line2_DRA <- rxDataStep(inData = Line2, outFile = "Line2DRA.xdf", rowSelection = (TagType == "DRA"), overwrite = T)
+rename(Line2_DRA,c("Value"="DRA"))
+rxMerge(inData1 = Line2t, inData2 = Line2_DRA, outFile = "Line2t5.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t4.xdf")
+file.remove("Line2DRA.xdf")
+Line2t <- RxXdfData("Line2t5.xdf")
+
+Line2_Pump1 <- rxDataStep(inData = Line2, outFile = "Line2Pump1.xdf", rowSelection = (TagType == "Pump_Status_1"),
+                          overwrite = T)
+rename(Line2_Pump1,c("Value"="Pump_Status_1"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump1, outFile = "Line2t6.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t5.xdf")
+file.remove("Line2Pump1.xdf")
+Line2t <- RxXdfData("Line2t6.xdf")
+
+Line2_Pump2 <- rxDataStep(inData = Line2, outFile = "Line2Pump2.xdf", rowSelection = (TagType == "Pump_Status_2"),
+                          overwrite = T)
+rename(Line2_Pump2,c("Value"="Pump_Status_2"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump2, outFile = "Line2t7.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t6.xdf")
+file.remove("Line2Pump2.xdf")
+Line2t <- RxXdfData("Line2t7.xdf")
+
+Line2_Pump3 <- rxDataStep(inData = Line2, outFile = "Line2Pump3.xdf", rowSelection = (TagType == "Pump_Status_3"),
+                          overwrite = T)
+rename(Line2_Pump3,c("Value"="Pump_Status_3"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump3, outFile = "Line2t8.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t7.xdf")
+file.remove("Line2Pump3.xdf")
+Line2t <- RxXdfData("Line2t8.xdf")
+
+Line2_Pump4 <- rxDataStep(inData = Line2, outFile = "Line2Pump4.xdf", rowSelection = (TagType == "Pump_Status_4"),
+                          overwrite = T)
+rename(Line2_Pump4,c("Value"="Pump_Status_4"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump4, outFile = "Line2t9.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t8.xdf")
+file.remove("Line2Pump4.xdf")
+Line2t <- RxXdfData("Line2t9.xdf")
+
+Line2_Pump5 <- rxDataStep(inData = Line2, outFile = "Line2Pump5.xdf", rowSelection = (TagType == "Pump_Status_5"),
+                          overwrite = T)
+rename(Line2_Pump5,c("Value"="Pump_Status_5"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump5, outFile = "Line2t10.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t9.xdf")
+file.remove("Line2Pump5.xdf")
+
+file.remove("Line2.xdf")
+file.rename("Line2t10.xdf","Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Convert the column types from characters to their proper types.
+* LogTime: POSIXct(format = "%Y-%m-%dT%H:%M:%S", tz = "MST")
+* Seg, Site, LogMonth, 7 LogYear: factor
+* HHPU, Flow, KW, Discharge, Suction, DRA: numeric
+* Pump_Status_1:5: factor
+
+Let's try two things:
+1. First way is to use a function to convert column types.
+2. 2nd way is to use use rxImport and colClasses to convert the types. However, we still need to use a function to convert LogTime.
+
+NOTE: For either way, add Pump_Status_6 if applicable here
+
+1st way
+
+```{r}
+
+conv_Columns <- function(dat){
+  dat$LogTime <- as.POSIXct(dat$LogTime, format = "%Y-%m-%dT%H:%M:%S", tz = "MST")
+  dat$Seg <- as.factor(dat$Seg)
+  dat$Site <- as.factor(dat$Site)
+  dat$LogMonth <- as.factor(dat$LogMonth)
+  dat$LogYear <- as.factor(dat$LogYear)
+  dat$HHPU <- as.numeric(dat$HHPU)
+  dat$KW <- as.numeric(dat$KW)
+  dat$Flow_Rate <- as.numeric(dat$Flow_Rate)
+  dat$Discharge_Pressure <- as.numeric(dat$Discharge_Pressure)
+  dat$Suction_Pressure <- as.numeric(dat$Suction_Pressure)
+  dat$DRA <- as.numeric(dat$DRA)
+  dat$Pump_Status_1 <- as.factor(dat$Pump_Status_1)
+  dat$Pump_Status_2 <- as.factor(dat$Pump_Status_2)
+  dat$Pump_Status_3 <- as.factor(dat$Pump_Status_3)
+  dat$Pump_Status_4 <- as.factor(dat$Pump_Status_4)
+  dat$Pump_Status_5 <- as.factor(dat$Pump_Status_5)
+  return(dat)
+}
+
+rxDataStep(Line2, outFile = "Line21.xdf", overwrite = T, transformFunc = conv_Columns)
+file.remove("Line2.xdf")
+file.rename("Line21.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+2nd way
+NOTE: This didn't convert the numeric columns, only the factor columns
+
+```{r}
+
+class <- c("LogTime" = "character", "Seg" = "factor", "Site" = "factor", "LogMonth" = "factor", "LogYear" = "factor",
+           "HHPU" = "numeric", "KW" = "numeric", "Flow_Rate" = "numeric", "Discharge_Pressure" = "numeric",
+           "Suction_Pressure" = "numeric", "DRA" = "numeric", "Pump_Status_1" = "factor", "Pump_Status_2" = "factor",
+           "Pump_Status_3" = "factor", "Pump_Status_4" = "factor", "Pump_Status_5" = "factor")
+
+conv_Time <- function(dat){
+  dat$LogTime <- as.POSIXct(dat$LogTime, format = "%Y-%m-%dT%H:%M:%S", tz = "MST")
+  return(dat)
+}
+
+rxImport(inData = Line2, outFile = "Line21.xdf", overwrite = T, colClasses = class)
+rxDataStep(inData = "Line21.xdf", outFile = "Line22.xdf", overwrite = T, transformFunc = conv_Time)
+file.remove("Line2.xdf")
+file.remove("Line21.xdf")
+file.rename("Line22.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Create number of pumps on and total pumps variable. This almost works with xdf files but it doesn't convert NA values to zero so it won't properly sum up the pump statuses and will return Na values for NumPumpsOn. However, if you load the data into memory it works fine.
+
+We'll also remove the rows with Na's at the end and the pump status columns since we don't need them anymore. 
+
+```{r}
+
+Line2_df <- rxImport(Line2)
+
+create_PumpVars <- function(dat){
+  
+  dat$Pump_Status_N1 <- ifelse(dat$Pump_Status_1 == "ON", 1,
+                               ifelse(dat$Pump_Status_1 == "IN SEQUENCE ON", 1, 0))
+  dat$Pump_Status_N2 <- ifelse(dat$Pump_Status_2 == "ON", 1,
+                               ifelse(dat$Pump_Status_2 == "IN SEQUENCE ON", 1, 0))
+  dat$Pump_Status_N3 <- ifelse(dat$Pump_Status_3 == "ON", 1,
+                               ifelse(dat$Pump_Status_3 == "IN SEQUENCE ON", 1, 0))
+  dat$Pump_Status_N4 <- ifelse(dat$Pump_Status_4 == "ON", 1,
+                               ifelse(dat$Pump_Status_4 == "IN SEQUENCE ON", 1, 0))
+  dat$Pump_Status_N5 <- ifelse(dat$Pump_Status_5 == "ON", 1,
+                               ifelse(dat$Pump_Status_5 == "IN SEQUENCE ON", 1, 0))
+  
+  dat[c(17,18,19,20,21)][is.na(dat[c(17,18,19,20,21)])] <- 0
+  dat$NumPumpsOn <- dat$Pump_Status_N1+dat$Pump_Status_N2+dat$Pump_Status_N3+dat$Pump_Status_N4+dat$Pump_Status_N5
+  
+  dat$TotalPumps <- ifelse(is.na(dat$Pump_Status_1) == TRUE, 0,
+                           ifelse(is.na(dat$Pump_Status_2) == TRUE, 1,
+                                  ifelse(is.na(dat$Pump_Status_3) == TRUE, 2,
+                                         ifelse(is.na(dat$Pump_Status_4) == TRUE, 3,
+                                                ifelse(is.na(dat$Pump_Status_5) == TRUE, 4, 5)))))
+  
+  
+  dat <- dat[c(1:11,22,23)]
+  return(dat)
+}
+
+Line2_df <- create_PumpVars(Line2_df)
+rxImport(Line2_df, outFile = "Line21.xdf", overwrite = T,
+         colInfo = list(NumPumpsOn = list(type = "factor", levels = c(as.character(0:6))),
+                        TotalPumps = list(type = "factor", levels = c(as.character(0:6)))))
+rxDataStep("Line21.xdf", outFile = "Line22.xdf", removeMissings = T, overwrite = T)
+remove(Line2_df)
+file.remove("Line2.xdf")
+file.remove("Line21.xdf")
+file.rename("Line22.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Create the datetime columns we need; Day of the Week, Day, and Hour. This requires lubridate package. We will also drop LogYear since we are only using 2016 data right now.
+
+```{r}
+
+create_DatetimeVars <- function(dat){
+  
+  dat$WeekDay <- as.factor(weekdays(dat$LogTime, abbreviate = T))
+  dat$Day <- as.factor(day(dat$LogTime))
+  dat$Hour <- as.factor(hour(dat$LogTime))
+  
+  return(dat)
+  
+}
+
+rxDataStep(Line2, outFile = "Line21.xdf", overwrite = T, transformFunc = create_DatetimeVars,
+           transformPackages = "lubridate", varsToDrop = c("LogYear"))
+file.remove("Line2.xdf")
+file.rename("Line21.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Create Differential column and remove discharge and suction.
+
+```{r}
+
+rxDataStep(Line2, outFile = "Line21.xdf", overwrite = T,
+           transforms = list(differential = Discharge_Pressure - Suction_Pressure))
+rxDataStep("Line21.xdf", outFile = "Line22.xdf", varsToDrop = c("Discharge_Pressure", "Suction_Pressure"))
+file.remove("Line2.xdf")
+file.remove("Line21.xdf")
+file.rename("Line22.xdf", "Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Rename Columns to match up with naming convention. When using rename you have to load plyr above dplyr otherwise it doesn't work. If 
+
+```{r}
+
+rename(Line2, c("LogTime" = "ts_pi", "Seg" = "line_segment", "LogMonth" = "ts_month", "Flow_Rate" = "flow_rate",
+                "DRA" = "dra", "HHPU" = "hhpu", "KW" = "kw", "NumPumpsOn" = "pump_status_on", "Hour" = "ts_hour",
+                "TotalPumps" = "pump_total", "WeekDay" = "ts_dow", "Day" = "ts_day", "Site" = "pump_station",
+                "differential" = "differential"))
+
+```
+
+Calculate the Difference between discharge and suction pressure and call it Differential. Using Differential, calculate what the theoretical values of Flow, HHPU, and KW should be. Calculate the percentage difference between the observed and calculated values. This is purely for comparison and data exploration purposes.
+
+```{r}
+
+rxDataStep(Line2, outFile = "Line2_Theo.xdf", overwrite = T,
+          transforms = list(HHPUC = differential*Flow_Rate*(23.8095238095238/3.785/2449),
+                            HHPU_Delta = (HHPUC - HHPU)*100/HHPU,
+                            KWC = HHPUC*0.7457,
+                            KW_Delta = (KWC - KW)*100/KW,
+                            KWSE = (KWC/KW)*100,
+                            FlowC = HHPUC/(differential*(23.8095238095238/3.785/2449)),
+                            Flow_Delta = (FlowC - Flow_Rate)*100/Flow_Rate))
+Line2_Theo <- RxXdfData("Line2_Theo.xdf")
+
+```
+

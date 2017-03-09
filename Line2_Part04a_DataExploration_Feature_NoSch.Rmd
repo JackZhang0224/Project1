@@ -1,0 +1,470 @@
+# Part 3a - Data Exploration 1: Feature Exploration
+
+Packages required to run this script.
+
+```{r Required Packages, message=FALSE}
+
+library(plyr)
+library(dplyrXdf)
+
+```
+
+Data needed to run this script.
+
+```{r Data Load, message=FALSE}
+
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+Let's arrange the stations by where they are along the line. (Ie by sequence of station). To do this we'll upload the csv Line Site Sequence.csv. This file contains data for the type of a station (terminal or small) and we'll left join it onto our original xdf file. Once that is done, we will arrange the xdf file first by Sequence then by time.
+
+NOTE: due to factors being annoying, we need to convert pump stations to characters before the join and then back to factors afterwards.
+
+```{r Arrange Data by Segment and Station}
+
+Seg_Seq <- read.csv("Line Site Sequence.csv", header = T)
+Seg_Seq <- subset(Seg_Seq, Line == 2)
+Seg_Seq <- plyr::rename(Seg_Seq, c("Site" = "pump_station"))
+Seg_Seq$pump_station <- as.character(Seg_Seq$pump_station)
+sites <- as.character(Seg_Seq$pump_station)
+
+rxDataStep(Line2, outFile = "Line2_Seq.xdf", transforms = list(pump_station = as.character(pump_station)))
+rxMerge(inData1 = "Line2_Seq.xdf", inData2 = Seg_Seq, outFile = "Line2_Seq1.xdf", type = "left",
+        matchVars = c("pump_station"))
+rxDataStep("Line2_Seq1.xdf", "Line2_Seq2.xdf", transforms = list(pump_station = factor(pump_station, levels = s)),
+           transformObjects = list(s = sites))
+rxSort("Line2_Seq2.xdf", outFile = "Line2_Seq3.xdf", sortByVars = c("Sequence", "ts_pi"))
+file.remove(c("Line2_Seq.xdf", "Line2_Seq1.xdf", "Line2_Seq2.xdf"))
+file.rename("Line2_Seq3.xdf", "Line2_Seq.xdf")
+Line2 <- RxXdfData("Line2_Seq.xdf")
+
+```
+
+## Stations on Line 2
+
+The stations found on line 2
+
+```{r Stations, message=FALSE}
+
+station <- Line2 %>% select(pump_station) %>% distinct %>% head(35)
+station <- station[[1]]
+station_tl <- Line2 %>% filter(Type == "TL") %>% select(pump_station) %>% distinct %>% head(30)
+station_tl <- station_tl[[1]]
+station_ps <- Line2 %>% filter(Type == "PS") %>% select(pump_station) %>% distinct %>% head(35)
+station_ps <- station_ps[[1]]
+
+cat("the number of stations on Line 2 is: ", length(station), "\n", sep = "")
+print(station)
+cat("\nthe number of terminals on Line 2 is: ", length(station_tl), "\n", sep = "")
+print(station_tl)
+cat("\nthe number of small pump stations on Line 2 is: ", length(station_ps), "\n", sep = "")
+print(station_ps)
+
+```
+
+29 stations on line 2 however there is 33 levels. We have lost stations SB, IV, WR, and PR. Stations IV and PR were removed during cleansing (note PW is PR) as both are pump stations at the end of the line and thus only deliveries and landings are taking place. Station SB wasn't in PI data but we know from Line 4 that it is an inactive terminal (replaced by terminal QU). Station WR is also an inactive terminal replaced by terminal PR which is at the end of the line. Everything here makes sense.
+
+Number of points from each station
+
+```{r Station Proportions, message=FALSE}
+
+station_len <- rxCube(~pump_station, Line2)
+tl <- c(as.character(station_tl), c( "WR", "PR"))
+station_len$type <- ifelse(station_len$pump_station %in% tl, "TL", "PS")
+station_len$Proportion <- station_len$Counts/nrow(Line2)*100
+station_len <- station_len[c(1,3,2,4)]
+
+print(station_len)
+
+```
+
+No points have been lost because I filled in missing data.
+##### Look into station CC
+
+## Segments on Line 2
+
+The stations found on line 2
+
+```{r Segments, message=FALSE}
+
+segment <- Line2 %>% select(line_segment) %>% distinct %>% head(30)
+segment <- segment[[1]]
+
+cat("the number of segments on Line 2 is: ", length(segment), "\n", sep = "")
+print(segment)
+
+```
+
+7 segments on line 2.
+
+Number of points from each segment
+
+```{r Segment Porportions, message=FALSE}
+
+segment_len <- rxCube(~line_segment, Line2, returnDataFrame = T)
+segment_len$Proportion <- segment_len$Counts/nrow(Line2)*100
+print(segment_len)
+
+```
+
+Every segment takes up between 10-20% of the data.
+
+What stations are in each segment.
+
+```{r Stations in Segment, message=FALSE}
+
+st_CM_GF <- Line2 %>% filter(line_segment == "2-CM-GF") %>% select(pump_station) %>% distinct()
+st_CM_GF <- as.character(st_CM_GF[[1]])
+st_GF_CR <- Line2 %>% filter(line_segment == "2-GF-CR") %>% select(pump_station) %>% distinct()
+st_GF_CR <- as.character(st_GF_CR[[1]])
+st_CR_PR <- Line2 %>% filter(line_segment == "2-CR-PR") %>% select(pump_station) %>% distinct()
+st_CR_PR <- as.character(st_CR_PR[[1]])
+st_EP_YP <- Line2 %>% filter(line_segment == "2-EP-YP") %>% select(pump_station) %>% distinct()
+st_EP_YP <- as.character(st_EP_YP[[1]])
+st_KB_SB <- Line2 %>% filter(line_segment == "2-KB-SB") %>% select(pump_station) %>% distinct()
+st_KB_SB <- as.character(st_KB_SB[[1]])
+st_QU_CM <- Line2 %>% filter(line_segment == "2-QU-CM") %>% select(pump_station) %>% distinct()
+st_QU_CM <- as.character(st_QU_CM[[1]])
+st_YP_KB <- Line2 %>% filter(line_segment == "2-YP-KB") %>% select(pump_station) %>% distinct()
+st_YP_KB <- as.character(st_YP_KB[[1]])
+
+station_segment <- list("2-CM-GF" = st_CM_GF, "2-GF-CR" = st_GF_CR, "2-CR-PR" = st_CR_PR, "2-EP-YP" = st_EP_YP,
+                        "2-KB-SB" = st_KB_SB, "2-QU-CM" = st_QU_CM, "2-YP-KB" = st_YP_KB)
+print(station_segment)
+
+```
+
+## Flow_Rate
+
+Let's explore the distribution of flow_rate
+
+```{r Flow_Rate Distribution, echo=TRUE, message=FALSE}
+
+rxHistogram(~ flow_rate, Line2)
+
+```
+
+3 Hills stand out. The largest is at 0 which says that there was nothing flowing along line 2 for a significant portion of time. Their are smaller humps around flow rate 1500 and 3000.
+
+Let's filter by station now
+
+```{r Flow by Station, echo=TRUE, message=FALSE}
+
+plt <- rxHistogram(~ flow_rate | pump_station, Line2)
+for (i in 1:33){
+  plot(plt[i])
+}
+
+```
+
+Of the 28 graphs, there are two patterns. Either the graphs have two humps at 0 and 1500 or 1 hump at 3000.
+
+Let's filter by segment now
+
+```{r Flow by Segment, echo=TRUE, message=FALSE}
+
+plt <- rxHistogram(~ flow_rate | line_segment, Line2)
+for(i in 1:7){
+  plot(plt[i])
+}
+
+```
+
+Segments 2-CM-GF, 2-GF-CR and 2-CR-PR have humps around 3000 with few points flow_rate = 0. These are the last 3 segments along the line. Segment 2-YP-KB have almost all points flow_rate = 0. The others seem to match the other graph type with humps at 0, 1500, and 3000.
+
+Let's compute the percentage of data points for Line 2 where flow_rate = 0
+
+```{r Flow = 0, message = FALSE}
+
+Line2_flow0 <- rxDataStep(Line2, outFile = "Line2_flow0.xdf", rowSelection = (flow_rate == 0))
+n_flow0 <- nrow(Line2_flow0)
+p_flow0 <- n_flow0/nrow(Line2)*100
+cat("The percentage of points where flow = 0 is ", round(p_flow0,2), "%", sep = "")
+
+```
+
+Roughly 20% of the data has flow_rate = 0%
+
+Let's compute the proportion of points equal to zero this for each station.
+
+```{r Flow = 0 by Station, echo=TRUE, message=FALSE, warning=FALSE}
+
+station_len0 <- rxCube(~pump_station, Line2_flow0)
+station_len0$type <- ifelse(station_len0$pump_station %in% tl, "TL", "PS")
+station_len0$Proportion <- (station_len0$Counts/station_len$Counts)*100
+station_len0 <- station_len0[c(1,3,2,4)]
+
+print(station_len0)
+
+```
+
+We know stations YP, ME, and CC are on segment 2-YP-KB. This segment had about 50% down time.
+
+Let's look at the summary statistics of flow rate
+
+```{r Summary Flow}
+
+rxSummary(~flow_rate, Line2)
+rxQuantile("flow_rate", Line2)
+
+```
+
+Everything seems to be good.
+
+##Number of pumps on
+
+Let's look at the distribution of pumps
+
+
+```{r Pump_status_on Counts, echo=TRUE, message=FALSE, warning=FALSE}
+
+pump_st_len <- rxCube(~pump_status_on, Line2, returnDataFrame = T)
+pump_st_len$Proportion <- round(pump_st_len$Counts/nrow(Line2)*100,2)
+
+print(pump_st_len)
+
+```
+
+By station
+
+```{r Pumps On Count by Station, echo=TRUE, message=FALSE}
+
+rxCrossTabs(~pump_status_on:pump_station, Line2)
+
+```
+
+Let's look at the distribution of pump status by each station
+
+```{r Pumps On Distribution by Station, echo=TRUE, message=FALSE}
+
+plt <- rxHistogram(~pump_status_on|pump_station,Line2)
+for(i in 1:33){
+  plot(plt[i])
+}
+
+```
+
+
+```{r PumpsOn Counts by Segment, echo=TRUE}
+
+rxCrossTabs(~pump_status_on:line_segment,Line2)
+
+```
+
+```{r PumpsOn by Segment, echo=TRUE, message=FALSE, warning=FALSE}
+
+plt <- rxHistogram(~pump_status_on|line_segment,Line2)
+for(i in 1:7){
+  plot(plt[i])
+}
+
+```
+
+```{r NumPumpsOn Counts by segment and station, echo=TRUE, message=FALSE, warning=FALSE}
+
+rxCube(~line_segment:pump_station:pump_status_on, Line2, removeZeroCounts = T )
+
+```
+
+
+```{r NumPumpsOn Distribution by Segment and Station, echo=TRUE, message=FALSE, warning=FALSE}
+
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment=="2-EP-YP"), title = "2-EP-YP")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment=="2-YP-KB"), title = "2-YP-KB")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment=="2-KB-SB"), title = "2-KB-SB")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment=="2-QU-CM"), title = "2-QU-CM")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment=="2-CM-GF"), title = "2-CM-GF")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment=="2-GF-CR"), title = "2-GF-CR")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment=="2-CR-PR"), title = "2-CR-PR")
+
+```
+
+Let's look at how flow rate is affected by num of pumps on
+
+```{r Flow Distribution by Num Pumps On, message=FALSE}
+
+rxHistogram(~flow_rate, Line2, rowSelection = (pump_status_on == 0), title = "0 Pumps On")
+rxHistogram(~flow_rate, Line2, rowSelection = (pump_status_on == 1), title = "1 Pumps On")
+rxHistogram(~flow_rate, Line2, rowSelection = (pump_status_on == 2), title = "2 Pumps On")
+rxHistogram(~flow_rate, Line2, rowSelection = (pump_status_on == 3), title = "3 Pumps On")
+rxHistogram(~flow_rate, Line2, rowSelection = (pump_status_on == 4), title = "4 Pumps On")
+rxHistogram(~flow_rate, Line2, rowSelection = (pump_status_on == 5), title = "5 Pumps On")
+rxHistogram(~flow_rate, Line2, rowSelection = (pump_status_on == 6), title = "6 Pumps On")
+
+```
+
+It looks like the vast majority of data points where flow = 0 correspond to having pump_status_on = 0 as well. Let's investigate this further.
+
+```{r Flow = 0 by pump_status_on, echo=TRUE, message=FALSE, warning=FALSE}
+
+rxHistogram(~flow_rate|pump_status_on,Line2_flow0)
+
+```
+
+```{r Flow = 0 by pump_status_on Counts, echo=TRUE, message=FALSE, warning=FALSE}
+
+pump_len_flow0 <- rxCube(~pump_status_on, Line2_flow0, returnDataFrame = T)
+pump_len_flow0$Proportion <- round(pump_len_flow0$Counts/nrow(Line2_flow0)*100,2)
+
+print(pump_len_flow0)
+
+```
+
+99% of the points where flow = 0, every pump was off. This makes sense.
+
+Let's look at flow vs. the datetime features
+
+```{r Flow by Datetime Distribution}
+
+rxHistogram(~flow_rate|ts_day, Line2, title = "Day")
+rxHistogram(~flow_rate|ts_dow, Line2, title = "Day of Week")
+rxHistogram(~flow_rate|ts_hour, Line2, title = "Hour")
+rxHistogram(~flow_rate|ts_month, Line2 , title = "Month")
+
+```
+
+Month is the only feature which seems to affect flow rate. What day of the month, week, and hour of the day doesn't seem to matter. This makes sense as CCO operates 24-7 but seasonal information might play a part in how much power is used at each station.
+
+Let's break it down a little further. Looking at interactions between day and month, day and hour, and month and hour is too granular and arbitrary. Basically knowing what specifically happened on Jan 1st at 10am last year is most likely pointless for predicting power as it's too specific as Schedulers don't make schedules based on what they did at the same time last year. However knowing what happened on a Saturday in December at 1am vs. a Monday in June at 8am might be more useful when predicting power.
+
+Flow rate by day of the week and hour.
+
+```{r Flow Rate by dow and Hour}
+
+rxHistogram(~flow_rate|ts_hour, Line2, rowSelection = (ts_dow == "Mon"), title = "Monday")
+rxHistogram(~flow_rate|ts_hour, Line2, rowSelection = (ts_dow == "Tue"), title = "Tuesday")
+rxHistogram(~flow_rate|ts_hour, Line2, rowSelection = (ts_dow == "Wed"), title = "Wednesday")
+rxHistogram(~flow_rate|ts_hour, Line2, rowSelection = (ts_dow == "Thu"), title = "Thursday")
+rxHistogram(~flow_rate|ts_hour, Line2, rowSelection = (ts_dow == "Fri"), title = "Friday")
+rxHistogram(~flow_rate|ts_hour, Line2, rowSelection = (ts_dow == "Sat"), title = "Saturday")
+rxHistogram(~flow_rate|ts_hour, Line2, rowSelection = (ts_dow == "Sun"), title = "Sunday")
+
+```
+
+Flow Rate by dow and day
+
+```{r Flow Rate by dow and day}
+
+rxHistogram(~flow_rate|ts_day, Line2, rowSelection = (ts_dow == "Mon"), title = "Monday")
+rxHistogram(~flow_rate|ts_day, Line2, rowSelection = (ts_dow == "Tue"), title = "Tuesday")
+rxHistogram(~flow_rate|ts_day, Line2, rowSelection = (ts_dow == "Wed"), title = "Wednesday")
+rxHistogram(~flow_rate|ts_day, Line2, rowSelection = (ts_dow == "Thu"), title = "Thursday")
+rxHistogram(~flow_rate|ts_day, Line2, rowSelection = (ts_dow == "Fri"), title = "Friday")
+rxHistogram(~flow_rate|ts_day, Line2, rowSelection = (ts_dow == "Sat"), title = "Saturday")
+rxHistogram(~flow_rate|ts_day, Line2, rowSelection = (ts_dow == "Sun"), title = "Sunday")
+
+```
+
+Flow Rate by dow and month
+
+```{r Flow Rate by dow and month}
+
+rxHistogram(~flow_rate|ts_month, Line2, rowSelection = (ts_dow == "Mon"), title = "Monday")
+rxHistogram(~flow_rate|ts_month, Line2, rowSelection = (ts_dow == "Tue"), title = "Tuesday")
+rxHistogram(~flow_rate|ts_month, Line2, rowSelection = (ts_dow == "Wed"), title = "Wednesday")
+rxHistogram(~flow_rate|ts_month, Line2, rowSelection = (ts_dow == "Thu"), title = "Thursday")
+rxHistogram(~flow_rate|ts_month, Line2, rowSelection = (ts_dow == "Fri"), title = "Friday")
+rxHistogram(~flow_rate|ts_month, Line2, rowSelection = (ts_dow == "Sat"), title = "Saturday")
+rxHistogram(~flow_rate|ts_month, Line2, rowSelection = (ts_dow == "Sun"), title = "Sunday")
+
+```
+
+##DRA
+
+Distribution of DRA
+
+```{r DRA Distribution, echo=FALSE}
+
+rxHistogram(~dra,Line2)
+
+```
+
+Majority of the data points seem to have dra = 0 but let's confirm
+
+```{r dra = 0 porportion, echo=FALSE, r dra=0 porportion}
+
+dra0 <- Line2 %>% filter(dra == 0)
+cat("the percentage of points where dra was 0 is ", round(nrow(dra0)/nrow(Line2)*100,2), "%", sep = "")
+
+```
+
+So for a little more then half the data points, no dra was used. Let's investigate dra further by segment and station.
+
+```{r Dra Distribution by Segment and Station, echo=FALSE, warning=FALSE}
+
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-EP-YP"), title = "2-EP-YP")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-YP-KB"), title = "2-YP-KB")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-KB-SB"), title = "2-KB-SB")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-QU-CM"), title = "2-QU-CM")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-CM-GF"), title = "2-CM-GF")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-GF-CR"), title = "2-GF-CR")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-CR-PR"), title = "2-CR-PR")
+
+```
+
+It appears that segments 2-CM-GF, 2-GF-CR, and 2-CR-PR are the only segments which use DRA more often than not. The other segments seem to only use it sporatically.
+
+Going back and looking at the original dra histogram we can see some outliers. Let's explore number of points st dra > 100.
+
+```{r DRA > 100}
+
+dra_n100 <- Line2 %>% filter(dra > 100) %>% nrow
+dra_n <- Line2 %>% filter(dra > 0) %>% nrow
+dra_p100 <- dra_n100/nrow(Line2)*100
+dra_p <- dra_n100/dra_n*100
+
+cat("the percentage of points where dra > 100 is: ", round(dra_p100,2), "%\n", sep="")
+cat("Given dra > 0, the percentage of points where dra > 100 is: ", round(dra_p,2), "%", sep="")
+
+```
+
+Given dra > 0, only 0.1% of points have dra > 100. We can probably consider these outliers. There could also be unit issues as we know different stations use different units but we are not sure which.
+
+Let's look at the summary of DRA
+
+```{r DRA Summary}
+
+rxSummary(~dra, Line2)
+rxQuantile("dra", Line2, probs = seq(0, 1, 0.1))
+
+```
+
+## Datetime features
+
+Let's look at counts of the datetime features just to make sure there aren't any issues.
+
+```{r Datetime}
+
+rxCrossTabs(~ts_day,Line2)
+rxCrossTabs(~ts_dow,Line2)
+rxCrossTabs(~ts_hour,Line2)
+rxCrossTabs(~ts_month,Line2)
+
+```
+
+The counts are all approximately the same so it seems to be okay.
+
+Let's look at pump type now. We already know how many stations are terminals and small stations. Let's look at the distribution of flow with respect to both pump types.
+
+```{r Distribution of Pump Type}
+
+rxHistogram(~flow_rate|Type, Line2)
+
+```
+
+The distribution doesn't seem to change.
+
+Let's look at the counts
+
+To keep our directories clean we'll remove the xdf files which were created in this markdown file.
+
+
+
+```{r Remove xdf Files}
+
+file.remove(c("Line2_flow0.xdf"))
+
+```
+
+``{r}

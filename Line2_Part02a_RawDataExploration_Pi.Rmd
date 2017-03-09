@@ -1,0 +1,126 @@
+# Raw Data Exploration
+
+```{r Required Packages}
+
+library(dplyrXdf)
+
+```
+
+Import Data
+
+```{r Data Import}
+
+Pi2 <- RxXdfData("Line2_Raw.xdf")
+
+```
+
+Create a function which removes and renames xdf files. Throughout the code, to help checkpoint yourself and keep the xdf files as clean and uncorrupted as possible, I will create multiple files for each chunk of code. For each iteration of an xdf file, it's name will be the name of the starting xdf file with a number added to the end, justt before the extension, representing the iteration of the code. The final line of the chunk will be using this function to remove previous versions of the xdf file and rename the final version to the name of the starting file. Don't run this function if you want to save every iteration of your xdf file. Set starting_filename to be the filename at the start of the chunk, set final_filename to be the name of the filename you want at the end, set n equal to the number of iterations which are created (ie the number of files created).
+
+Example:
+Start with df.xdf file and run a chunk of code which creates 4 additional iterations; df1.xdf, df2.xdf, df3.xdf, and df4.xdf. If we set starting_filename = "df.xdf" and n = 4, change_Xdf will remove files df.xdf, df1.xdf, df2.xdf, and df3.xdf. It will also rename df4.xdf to df.xdf and return it as a formal class xdf.
+
+```{r Xdf File Function}
+
+change_Xdf <- function(starting_filename = "Line2.xdf", final_filename = starting_filename, n = 1){
+  
+  xdf <- starting_filename
+  xdf_name <- substr(xdf, 1, nchar(xdf) - 4)
+  xdf_ext <- ".xdf"
+  i <- 0
+  
+  while (i < n){
+    if (i == 0){
+      file.remove(xdf)
+      i <- i + 1
+    }
+    else {
+      xdf_str <- paste0(xdf_name,i,xdf_ext)
+      file.remove(xdf_str)
+      i <- i + 1
+    }
+  }
+  
+  xdf_str <- paste0(xdf_name,i,xdf_ext)
+  file.rename(xdf_str, final_filename)
+  return(RxXdfData(final_filename))
+  
+}
+
+```
+
+Let's start by filtering out what we don't need so we are working with a smaller data set. This means we will drop the Pi Tags we are not using. Since we aren't merging the data, RawC will stand for raw cleansed. We will also convert the columns from characters to we can get counts for them.
+
+```{r Initial Cleansing}
+
+tags <- c("HHPU", "KW", "Discharge_Pressure", "Flow_Rate", "Suction_Pressure", "DRA",
+          "Pump_Status_1", "Pump_Status_2", "Pump_Status_3", "Pump_Status_4", "Pump_Status_5")
+
+convert_Col <- function(dat){
+  dat$LogTime <- as.POSIXct(dat$LogTime, format = "%Y-%m-%dT%H:%M:%S", tz = "MST")
+  dat$Seg <- as.factor(dat$Seg)
+  dat$Site <- as.factor(dat$Site)
+  dat$TagType <- as.factor(dat$TagType)
+  dat$ValType <- as.factor(dat$ValType)
+  dat$IsGood <- as.factor(dat$IsGood)
+  dat$IsQuestionable <- as.factor(dat$IsQuestionable)
+  dat$IsSubst <- as.factor(dat$IsSubst)
+  return(dat)
+}
+
+rxDataStep(inData = Pi2, outFile = "Line2_RawC.xdf", rowSelection = (TagType %in% t),
+           transformObjects = list(t = tags), overwrite = TRUE)
+rxDataStep("Line2_RawC.xdf", outFile = "Line2_RawC1.xdf", transformFunc = convert_Col)
+Pi2 <- change_Xdf(starting_filename = "Line2_RawC.xdf", n = 1)
+
+```
+
+Let's figure out what tags we are missing by Site.
+
+```{r Missing Tags}
+
+rxCrossTabs(~TagType:Site,Pi2)
+
+```
+
+Stations IV and PW can be removed since we're missing almost all tags for them. We need to fill in DRA = 0 for station WC because we are losing it right now.
+
+Now let's look at IsGood counts
+
+```{r IsGood}
+
+rxCrossTabs(~IsGood:TagType,Pi2)
+
+```
+
+The only thing of note here is we lose a lot of points to DRA when we filter. Probably best to set DRA = 0 if IsGood = 0 for those tags.
+
+Now for IsQuestionable
+
+```{r IsQuestionable}
+
+rxCrossTabs(~IsQuestionable:TagType,Pi2)
+
+```
+
+Everything is zero so ignore
+
+IsSubst
+
+```{r IsSubst}
+
+rxCrossTabs(~IsSubst:TagType, Pi2)
+
+```
+
+Everything is zero so ignore
+
+Let's look at uom
+
+```{r UOM}
+
+rxSummary(~uom,Pi2)
+Pi2 %>% select(uom) %>% distinct %>% head
+
+```
+
+Every point is NA so we can remove as well.

@@ -1,0 +1,103 @@
+# Alternative Method for Pivoting Pi Data
+
+If we don't want to load data directly into memory, we need to work strictly with xdf files. To do this, we will create 11 different xdf files, one for each tag type. For each tag, we drop the tag type column and rename the value column as the tag for that file. For tags we where we want to remove the entire row if an Na value exist, specify join to be inner. For tags we don't want to remove the entire row, specify join to be left.
+
+```{r}
+
+Line2_HHPU <- rxDataStep(inData = Line2, outFile = "Line2HHPU.xdf", rowSelection = (TagType == "HHPU"), overwrite = T)
+rename(Line2_HHPU,c("Value"="HHPU"))
+Line2t <- rxDataStep(Line2_HHPU, outFile = "Line2t.xdf", varsToDrop = c("TagType"), overwrite=T)
+file.remove("Line2HHPU.xdf")
+
+Line2_KW <- rxDataStep(inData = Line2, outFile = "Line2KW.xdf", rowSelection = (TagType == "KW"), overwrite = T)
+rename(Line2_KW,c("Value"="KW"))
+rxMerge(inData1 = Line2t, inData2 = Line2_KW, outFile = "Line2t1.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t.xdf")
+file.remove("Line2KW.xdf")
+Line2t <- RxXdfData("Line2t1.xdf")
+
+Line2_Flow <- rxDataStep(inData = Line2, outFile = "Line2Flow.xdf", rowSelection = (TagType == "Flow_Rate"),
+                         overwrite = T)
+rename(Line2_Flow,c("Value"="Flow_Rate"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Flow, outFile = "Line2t2.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t1.xdf")
+file.remove("Line2Flow.xdf")
+Line2t <- RxXdfData("Line2t2.xdf")
+
+Line2_Dis <- rxDataStep(inData = Line2, outFile = "Line2Dis.xdf",
+                        rowSelection = (TagType == "Discharge_Pressure"), overwrite = T)
+rename(Line2_Dis,c("Value"="Discharge_Pressure"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Dis, outFile = "Line2t3.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t2.xdf")
+file.remove("Line2Dis.xdf")
+Line2t <- RxXdfData("Line2t3.xdf")
+
+Line2_Suc <- rxDataStep(inData = Line2, outFile = "Line2Suc.xdf", rowSelection = (TagType == "Suction_Pressure"),
+                        overwrite = T)
+rename(Line2_Suc,c("Value"="Suction_Pressure"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Suc, outFile = "Line2t4.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t3.xdf")
+file.remove("Line2Suc.xdf")
+Line2t <- RxXdfData("Line2t4.xdf")
+
+Line2_DRA <- rxDataStep(inData = Line2, outFile = "Line2DRA.xdf", rowSelection = (TagType == "DRA"), overwrite = T)
+rename(Line2_DRA,c("Value"="DRA"))
+rxMerge(inData1 = Line2t, inData2 = Line2_DRA, outFile = "Line2t5.xdf", varsToDrop2 = c("TagType"),
+        type = "inner", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t4.xdf")
+file.remove("Line2DRA.xdf")
+Line2t <- RxXdfData("Line2t5.xdf")
+
+Line2_Pump1 <- rxDataStep(inData = Line2, outFile = "Line2Pump1.xdf", rowSelection = (TagType == "Pump_Status_1"),
+                          overwrite = T)
+rename(Line2_Pump1,c("Value"="Pump_Status_1"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump1, outFile = "Line2t6.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t5.xdf")
+file.remove("Line2Pump1.xdf")
+Line2t <- RxXdfData("Line2t6.xdf")
+
+Line2_Pump2 <- rxDataStep(inData = Line2, outFile = "Line2Pump2.xdf", rowSelection = (TagType == "Pump_Status_2"),
+                          overwrite = T)
+rename(Line2_Pump2,c("Value"="Pump_Status_2"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump2, outFile = "Line2t7.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t6.xdf")
+file.remove("Line2Pump2.xdf")
+Line2t <- RxXdfData("Line2t7.xdf")
+
+Line2_Pump3 <- rxDataStep(inData = Line2, outFile = "Line2Pump3.xdf", rowSelection = (TagType == "Pump_Status_3"),
+                          overwrite = T)
+rename(Line2_Pump3,c("Value"="Pump_Status_3"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump3, outFile = "Line2t8.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t7.xdf")
+file.remove("Line2Pump3.xdf")
+Line2t <- RxXdfData("Line2t8.xdf")
+
+Line2_Pump4 <- rxDataStep(inData = Line2, outFile = "Line2Pump4.xdf", rowSelection = (TagType == "Pump_Status_4"),
+                          overwrite = T)
+rename(Line2_Pump4,c("Value"="Pump_Status_4"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump4, outFile = "Line2t9.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t8.xdf")
+file.remove("Line2Pump4.xdf")
+Line2t <- RxXdfData("Line2t9.xdf")
+
+Line2_Pump5 <- rxDataStep(inData = Line2, outFile = "Line2Pump5.xdf", rowSelection = (TagType == "Pump_Status_5"),
+                          overwrite = T)
+rename(Line2_Pump5,c("Value"="Pump_Status_5"))
+rxMerge(inData1 = Line2t, inData2 = Line2_Pump5, outFile = "Line2t10.xdf", varsToDrop2 = c("TagType"),
+        type = "left", matchVars = c("LogTime", "Seg", "Site", "LogMonth", "LogYear"), overwrite=T)
+file.remove("Line2t9.xdf")
+file.remove("Line2Pump5.xdf")
+
+file.remove("Line2.xdf")
+file.rename("Line2t10.xdf","Line2.xdf")
+Line2 <- RxXdfData("Line2.xdf")
+
+```

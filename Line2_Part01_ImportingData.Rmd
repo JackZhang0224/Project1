@@ -1,0 +1,202 @@
+# Step 1 - Importing Data from Storage
+
+Required Libraries needed to run the code.
+
+NOTE: If you have dplyr(Xdf) loaded, rename from plyr won't work properly. if that is the case use plyr::rename inplace of rename.
+
+```{r Required Libraries, message=FALSE}
+
+library(httr)
+library(RCurl)
+library(bitops)
+
+```
+
+To import data from blob storage and convert the bz2 files into an xdf file. The following code was written by John Khow and full details can be found [here](http://enbze2elpde-ghe.eastus2.cloudapp.azure.com/Enbridge/R-Common-Libraries/blob/master/azureStorageAccess.R).
+
+First create the functions needed to import the bz2 files from blob storage.
+
+```{r Import Functions, message=FALSE}
+
+azureStorageCall <- function(url, verb, key, storageType="file", requestBody=NULL, headers=NULL, ifMatch="", md5="") { 
+  urlcomponents <- httr::parse_url(url)
+  storageDomainName <- paste0(".", storageType, ".core.windows.net")
+  account <- gsub(storageDomainName, "", urlcomponents$hostname, fixed = TRUE)
+  container <- urlcomponents$path
+  
+  # get timestamp in us locale
+  lct <- Sys.getlocale("LC_TIME")
+  #print(lct)
+  #Sys.setlocale("LC_TIME", "us")
+  Sys.setlocale("LC_TIME", "en_US.UTF-8")
+  `x-ms-date` <- format(Sys.time(),"%a, %d %b %Y %H:%M:%S %Z", tz="GMT")
+  Sys.setlocale("LC_TIME", lct)
+  
+  # if requestBody exist get content length in bytes and content type
+  `Content-Length` <- ""; `Content-Type` <- ""
+  if(!is.null(requestBody)) {
+    if(class(requestBody) == "form_file") {
+      `Content-Length` <- (file.info(requestBody$path))$size
+      `Content-Type` <- requestBody$type 
+    } else {
+      requestBody <- enc2utf8(as.character(requestBody))
+      `Content-Length` <- nchar(requestBody, "bytes")
+      `Content-Type` <- "text/plain; charset=UTF-8" 
+    }
+  } 
+  
+  # combine timestamp and version headers with any input headers, order and create the CanonicalizedHeaders
+  headers <- setNames(c(`x-ms-date`, "2015-04-05",  unlist(headers)), 
+                      c("x-ms-date", "x-ms-version", unclass(names(unlist(headers)))))
+  headers <- headers[order(names(headers))]
+  CanonicalizedHeaders <- paste(names(headers), headers, sep=":", collapse = "\n")
+  
+  # create CanonicalizedResource headers and add any queries to it
+  if(!is.null(urlcomponents$query)) {
+    components <- setNames(unlist(urlcomponents$query), unclass(names(unlist(urlcomponents$query))))
+    componentstring <- paste0("\n", paste(names(components[order(names(components))]),
+                                          components[order(names(components))], sep=":", collapse = "\n"))
+  } else componentstring <- ""
+  CanonicalizedResource <- paste0("/",account,"/",container, componentstring)
+  
+  # create the authorizationtoken
+  signaturestring <- paste0(verb, "\n\n\n", `Content-Length`, "\n", md5, "\n", `Content-Type`, "\n\n\n", 
+                            ifMatch, "\n\n\n\n", CanonicalizedHeaders, "\n", CanonicalizedResource)
+  
+  requestspecificencodedkey <- RCurl::base64(
+    digest::hmac(key=RCurl::base64Decode(key, mode="raw"),
+                 object=enc2utf8(signaturestring),
+                 algo= "sha256", raw=TRUE)
+  )
+  
+  authorizationtoken <- paste0("SharedKey ", account, ":", requestspecificencodedkey)
+  
+  # make the call
+  headers_final <- add_headers(Authorization=authorizationtoken, headers, `Content-Type` = `Content-Type`)
+  call <- httr::VERB(verb=verb, url=url, config=headers_final, body=requestBody, verbose())
+  
+  return(call)
+} 
+
+azureCSVBZip2ToDataTable <- function (azureStorageUrl, key, container, bzip2Filepath, storageType="file", encoding = 'UTF-8') {
+  
+  # Replace spaces with HTTP encoding, i.e., %20
+  container <- gsub(" ", "%20", container)  
+  bzip2Filepath <- gsub(" ", "%20", bzip2Filepath)  
+  
+  # Assemble the URL
+  azureUrl <- paste0(azureStorageUrl, "/", container, "/", bzip2Filepath) 
+  
+  # Get the file from the Azure Storage Account
+  response <- azureStorageCall(azureUrl, "GET", key, storageType)
+  
+  # Get the content of the response.  We are expecting "zip".
+  bzip2 <- content(response, as="raw")
+  
+  # Save the bzip2 content to a temporary file.
+  tmpBzip2Filename <- tempfile(pattern = "file", tmpdir = tempdir(), fileext = ".csv.bz2")
+  writeBin(bzip2, tmpBzip2Filename)
+  
+  # Remove the zip variable to save memory
+  remove(bzip2)
+  
+  # Read the csv file into a data frame.
+  
+  # Get a connection to the file within the zip file
+  con <- bzfile(tmpBzip2Filename)
+  df <- read.csv(con, stringsAsFactors = F)
+
+  # Remove the temporary file.
+  file.remove(tmpBzip2Filename)  
+  
+  return (df)
+}
+
+```
+
+Create strings which will represent the blob key, url, and share resource.
+
+```{r key, url, and share}
+
+key <- "ITnD8P0dMGURFECkMANiwtS65Ou72OKPf1WtUYLFmUBs7sJW2UhghelMKrZkZxRAXu3b6aaVeqhFZey6MosRaw=="
+azureBaseUrl <- "https://enbze2elpdestarserver.blob.core.windows.net"
+azureShare <- "2017-power-optimization"
+
+```
+
+Import Pi data from blob into and Line2.xdf file. A string for the filename needs to be created before the rxImport code is created.
+
+```{r Import Pi Data, message = FALSE}
+
+azureZipFilename <- "machine_learning/data/2016/Line2_Month01_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month02_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month03_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month04_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month05_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month06_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month07_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month08_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month08_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month09_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month10_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month11_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2016/Line2_Month12_2016.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+
+```
+
+Import linefill and schedule data
+
+```{r Import Linefill and Schedule Data, message = FALSE}
+
+azureZipFilename <- "machine_learning/data/2016/Linefill Sites - Jan to Dec 2016.csv.bz2"
+Linefill <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Linefill_Raw.xdf", overwrite = T, stringsAsFactors = F)
+
+azureZipFilename <- "machine_learning/data/2016/Data Exploration Jan - Dec 2016 Dataset.csv.bz2"
+Schedule <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Schedule_Raw.xdf", overwrite = T, stringsAsFactors = F)
+
+```
+
+Next step is clean the data up

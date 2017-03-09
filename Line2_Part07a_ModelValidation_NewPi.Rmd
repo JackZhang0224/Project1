@@ -1,0 +1,822 @@
+---
+title: "Part 7a - Model Validation - New Pi Data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Required Packages, warning=FALSE}
+
+# Needed for importing data from R. Remove these if you've already imported the new data.
+library(httr)
+library(RCurl)
+library(bitops)
+
+# Packages needed for data cleansing.
+library(plyr)
+library(tidyr)
+library(dplyrXdf)
+library(lubridate)
+
+# Packages needed for graphics
+library(ggplot2)
+
+```
+
+Change XDF file function. See Part 2, raw data exploration for more details.
+
+```{r Xdf File Function}
+
+change_Xdf <- function(starting_filename = "Line2.xdf", final_filename = starting_filename, n = 1){
+  
+  xdf <- starting_filename
+  xdf_name <- substr(xdf, 1, nchar(xdf) - 4)
+  xdf_ext <- ".xdf"
+  i <- 0
+  
+  while (i < n){
+    if (i == 0){
+      file.remove(xdf)
+      i <- i + 1
+    }
+    else {
+      xdf_str <- paste0(xdf_name,i,xdf_ext)
+      file.remove(xdf_str)
+      i <- i + 1
+    }
+  }
+  
+  xdf_str <- paste0(xdf_name,i,xdf_ext)
+  file.rename(xdf_str, final_filename)
+  return(RxXdfData(final_filename))
+  
+}
+
+```
+
+Import new pi data from blob storage. See part 1 for more details.
+
+NOTE: Skip this step if you've already imported the new pi data.
+
+```{r Import Data}
+
+# Functions needed to call the blob storage and import new data.
+azureStorageCall <- function(url, verb, key, storageType="file", requestBody=NULL, headers=NULL, ifMatch="", md5="") { 
+  urlcomponents <- httr::parse_url(url)
+  storageDomainName <- paste0(".", storageType, ".core.windows.net")
+  account <- gsub(storageDomainName, "", urlcomponents$hostname, fixed = TRUE)
+  container <- urlcomponents$path
+  
+  lct <- Sys.getlocale("LC_TIME")
+  Sys.setlocale("LC_TIME", "en_US.UTF-8")
+  `x-ms-date` <- format(Sys.time(),"%a, %d %b %Y %H:%M:%S %Z", tz="GMT")
+  Sys.setlocale("LC_TIME", lct)
+  
+  `Content-Length` <- ""; `Content-Type` <- ""
+  if(!is.null(requestBody)) {
+    if(class(requestBody) == "form_file") {
+      `Content-Length` <- (file.info(requestBody$path))$size
+      `Content-Type` <- requestBody$type 
+    } else {
+      requestBody <- enc2utf8(as.character(requestBody))
+      `Content-Length` <- nchar(requestBody, "bytes")
+      `Content-Type` <- "text/plain; charset=UTF-8" 
+    }
+  } 
+  
+  headers <- setNames(c(`x-ms-date`, "2015-04-05",  unlist(headers)), 
+                      c("x-ms-date", "x-ms-version", unclass(names(unlist(headers)))))
+  headers <- headers[order(names(headers))]
+  CanonicalizedHeaders <- paste(names(headers), headers, sep=":", collapse = "\n")
+  
+  if(!is.null(urlcomponents$query)) {
+    components <- setNames(unlist(urlcomponents$query), unclass(names(unlist(urlcomponents$query))))
+    componentstring <- paste0("\n", paste(names(components[order(names(components))]),
+                                          components[order(names(components))], sep=":", collapse = "\n"))
+  } else componentstring <- ""
+  CanonicalizedResource <- paste0("/",account,"/",container, componentstring)
+  
+  signaturestring <- paste0(verb, "\n\n\n", `Content-Length`, "\n", md5, "\n", `Content-Type`, "\n\n\n", 
+                            ifMatch, "\n\n\n\n", CanonicalizedHeaders, "\n", CanonicalizedResource)
+  
+  requestspecificencodedkey <- RCurl::base64(
+    digest::hmac(key=RCurl::base64Decode(key, mode="raw"),
+                 object=enc2utf8(signaturestring),
+                 algo= "sha256", raw=TRUE)
+  )
+  
+  authorizationtoken <- paste0("SharedKey ", account, ":", requestspecificencodedkey)
+  
+  headers_final <- add_headers(Authorization=authorizationtoken, headers, `Content-Type` = `Content-Type`)
+  call <- httr::VERB(verb=verb, url=url, config=headers_final, body=requestBody, verbose())
+  
+  return(call)
+} 
+
+azureCSVBZip2ToDataTable <- function (azureStorageUrl, key, container, bzip2Filepath, storageType="file", encoding = 'UTF-8') {
+  
+  container <- gsub(" ", "%20", container)  
+  bzip2Filepath <- gsub(" ", "%20", bzip2Filepath)  
+  
+  azureUrl <- paste0(azureStorageUrl, "/", container, "/", bzip2Filepath) 
+  
+  response <- azureStorageCall(azureUrl, "GET", key, storageType)
+  
+  bzip2 <- content(response, as="raw")
+  
+  tmpBzip2Filename <- tempfile(pattern = "file", tmpdir = tempdir(), fileext = ".csv.bz2")
+  writeBin(bzip2, tmpBzip2Filename)
+  
+  remove(bzip2)
+  
+  con <- bzfile(tmpBzip2Filename)
+  df <- read.csv(con, stringsAsFactors = F)
+
+  file.remove(tmpBzip2Filename)  
+  
+  return (df)
+}
+
+# Key, Url, and Share strings needed to access blob storage
+key <- "ITnD8P0dMGURFECkMANiwtS65Ou72OKPf1WtUYLFmUBs7sJW2UhghelMKrZkZxRAXu3b6aaVeqhFZey6MosRaw=="
+azureBaseUrl <- "https://enbze2elpdestarserver.blob.core.windows.net"
+azureShare <- "2017-power-optimization"
+
+# Import Pi Data
+azureZipFilename <- "machine_learning/data/2017/Line2_Month01_2017.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Validate_Raw.xdf", overwrite = T, stringsAsFactors = F)
+azureZipFilename <- "machine_learning/data/2017/Line2_Month02_2017.csv.bz2"
+Pi2 <- rxImport(inData = azureCSVBZip2ToDataTable(azureBaseUrl, key, azureShare, azureZipFilename, "blob",
+                                                        encoding="UTF-8"),
+                     outFile = "Line2_Validate_Raw.xdf", overwrite = T, append = T, stringsAsFactors = F)
+
+```
+
+Now we need to explore the raw data to make sure it is good and find what needs to be cleaned up. See Part 2 for more details.
+
+```{r Raw Data Exploration}
+
+# Convert certain column types to factors
+tags <- c("HHPU", "KW", "Discharge_Pressure", "Flow_Rate", "Suction_Pressure", "DRA",
+          "Pump_Status_1", "Pump_Status_2", "Pump_Status_3", "Pump_Status_4", "Pump_Status_5")
+
+convert_Col <- function(dat){
+  dat$LogTime <- as.POSIXct(dat$LogTime, format = "%Y-%m-%dT%H:%M:%S", tz = "MST")
+  dat$Seg <- as.factor(dat$Seg)
+  dat$Site <- as.factor(dat$Site)
+  dat$TagType <- as.factor(dat$TagType)
+  dat$ValType <- as.factor(dat$ValType)
+  dat$IsGood <- as.factor(dat$IsGood)
+  dat$IsQuestionable <- as.factor(dat$IsQuestionable)
+  dat$IsSubst <- as.factor(dat$IsSubst)
+  return(dat)
+}
+
+rxDataStep(inData = Pi2, outFile = "Line2_Validate_RawC.xdf", rowSelection = (TagType %in% t),
+           transformObjects = list(t = tags), overwrite = TRUE)
+rxDataStep("Line2_Validate_RawC.xdf", outFile = "Line2_Validate_RawC1.xdf", transformFunc = convert_Col)
+Pi2 <- change_Xdf(starting_filename = "Line2_Validate_RawC.xdf", n = 1)
+
+# Find Missing and bad Tags
+rxCrossTabs(~TagType:Site, Pi2)
+rxCrossTabs(~Site:IsGood:TagType, Pi2)
+
+```
+
+Only missing dra tags for WC and the only significant amount of bad tags was for dra tags.
+
+Start Cleansing the raw data for modelling purposes. See Part 3 Cleansing Data for more details
+
+```{r Cleansing Data}
+
+# Remove Unecessary Columns and Tags
+vars <- c("LogTime","Seg", "Site", "TagType", "ValType", "ValInt", "ValFlt", "ValDig", "IsGood", "LogMonth", "LogYear")
+tags <- c("HHPU", "KW", "Discharge_Pressure", "Flow_Rate", "Suction_Pressure", "DRA",
+          "Pump_Status_1", "Pump_Status_2", "Pump_Status_3", "Pump_Status_4", "Pump_Status_5")
+
+Pi2 <- RxXdfData("Line2_Validate_Raw.xdf")
+rxDataStep(inData = Pi2, outFile = "Line2_Validate.xdf", overwrite = T, varsToKeep = vars)
+rxDataStep(inData = "Line2_Validate.xdf", outFile = "Line2_Validate1.xdf", rowSelection = (TagType %in% t),
+           transformObjects = list(t = tags), rowsPerRead = 10000000)
+Pi2 <- change_Xdf("Line2_Validate.xdf", n = 1)
+
+# Create Value Column
+create_Value <- function(dat){
+  dat$Value <- ifelse(dat$ValType == "int", as.character(dat$ValInt),
+                      ifelse(dat$ValType == "float", as.character(dat$ValFlt), dat$ValDig))
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line2_Validate1.xdf", overwrite = T, transformFunc = create_Value)
+rxDataStep("Line2_Validate1.xdf", outFile = "Line2_Validate2.xdf",
+           varsToDrop = c("ValType", "ValInt", "ValFlt", "ValDig"))
+Pi2 <- change_Xdf("Line2_Validate.xdf", n = 2)
+
+# Fix bad DRA values and filter out the other bad readings
+fix_DRA_bad <- function(dat){
+  dat$Value <- ifelse((dat$TagType == "DRA") & (dat$IsGood == 0), "0", dat$Value)
+  dat$IsGood <- ifelse((dat$TagType == "DRA") & (dat$IsGood == 0), as.integer(1), as.integer(dat$IsGood))
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line2_Validate1.xdf", transformFunc = fix_DRA_bad)
+rxDataStep(inData = "Line2_Validate1.xdf", outFile = "Line2_Validate2.xdf", rowSelection = (IsGood == 1))
+rxDataStep(inData = "Line2_Validate2.xdf", outFile = "Line2_Validate3.xdf", varsToDrop = c("IsGood"))
+Pi2 <- change_Xdf("Line2_Validate.xdf", n = 3)
+
+# Pivot Data by month
+Pi2_df <- rxImport(Pi2, rowSelection = (LogMonth == 1))
+Pi2_df <- spread(Pi2_df, TagType, Value)
+Pi2_df <- Pi2_df[c(1,2,3,4,5,8,6,16,7,9,10,11,12,13,14,15)]
+rxImport(Pi2_df, outFile = "Line2_Validate_AfterPivot.xdf")
+Pi2_df <- rxImport(Pi2, rowSelection = (LogMonth %in% c(2,3)))
+Pi2_df <- spread(Pi2_df, TagType, Value)
+Pi2_df <- Pi2_df[c(1,2,3,4,5,8,6,16,7,9,10,11,12,13,14,15)]
+rxImport(Pi2_df, outFile = "Line2_Validate_AfterPivot.xdf", overwrite = T, append = T)
+file.rename("Line2_Validate.xdf", "Line2_Validate_UnPivot.xdf")
+Pi2 <- RxXdfData("Line2_Validate_AfterPivot.xdf")
+
+# Fix Missing DRA Values
+fix_Missing <- function(dat){
+  dat$DRA <- ifelse(is.na(dat$DRA) == TRUE, "0", dat$DRA)
+  return(dat)
+}
+
+Pi2 <- rxDataStep(Pi2, outFile = "Line2_Validate.xdf", transformFunc = fix_Missing)
+
+# Split Segment 2-CM-CR into 2-CM-GF and 2-GF-CR
+split_Seg <- function(dat){
+  dat$Seg <- ifelse(dat$Site %in% c("CM", "SP", "LP", "XP"), "2-CM-GF",
+                    ifelse(dat$Site %in% c("GF", "PL", "DN", "VG"), "2-GF-CR", dat$Seg))
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line2_Validate1.xdf", transformFunc = split_Seg)
+Pi2 <- change_Xdf("Line2_Validate.xdf", n = 1)
+
+# Remove inactive stations
+rxDataStep(Pi2, outFile = "Line2_Validate1.xdf", rowSelection = !(Site %in% c("IV", "PW")))
+Pi2 <- change_Xdf("Line2_Validate.xdf", n = 1)
+
+# Convert column types to their proper type. We're going to load data into memory and leave it there for the next step.
+conv_Columns <- function(dat){
+  dat$LogTime <- as.POSIXct(dat$LogTime, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+  dat$Seg <- as.factor(dat$Seg)
+  dat$Site <- as.factor(dat$Site)
+  dat$LogMonth <- as.factor(dat$LogMonth)
+  dat$LogYear <- as.factor(dat$LogYear)
+  dat$HHPU <- as.numeric(dat$HHPU)
+  dat$KW <- as.numeric(dat$KW)
+  dat$Flow_Rate <- as.numeric(dat$Flow_Rate)
+  dat$Discharge_Pressure <- as.numeric(dat$Discharge_Pressure)
+  dat$Suction_Pressure <- as.numeric(dat$Suction_Pressure)
+  dat$DRA <- as.numeric(dat$DRA)
+  dat$Pump_Status_1 <- as.factor(dat$Pump_Status_1)
+  dat$Pump_Status_2 <- as.factor(dat$Pump_Status_2)
+  dat$Pump_Status_3 <- as.factor(dat$Pump_Status_3)
+  dat$Pump_Status_4 <- as.factor(dat$Pump_Status_4)
+  dat$Pump_Status_5 <- as.factor(dat$Pump_Status_5)
+  return(dat)
+}
+
+Pi2_df <- rxImport(Pi2)
+Pi2_df <- conv_Columns(Pi2_df)
+
+# Create number of pumps on and total pumps feature
+create_PumpVars <- function(dat, on_status = c("ON", "IN SEQUENCE ON")){
+  
+  dat$Pump_Status_N1 <- ifelse(dat$Pump_Status_1 %in% on_status, 1, 0)
+  dat$Pump_Status_N2 <- ifelse(dat$Pump_Status_2 %in% on_status, 1, 0)
+  dat$Pump_Status_N3 <- ifelse(dat$Pump_Status_3 %in% on_status, 1, 0)
+  dat$Pump_Status_N4 <- ifelse(dat$Pump_Status_4 %in% on_status, 1, 0)
+  dat$Pump_Status_N5 <- ifelse(dat$Pump_Status_5 %in% on_status, 1, 0)
+  
+  dat[c(17,18,19,20,21)][is.na(dat[c(17,18,19,20,21)])] <- 0
+  dat$NumPumpsOn <- dat$Pump_Status_N1+dat$Pump_Status_N2+dat$Pump_Status_N3+dat$Pump_Status_N4+dat$Pump_Status_N5
+  
+  dat$TotalPumps <- ifelse(is.na(dat$Pump_Status_1) == TRUE, 0,
+                           ifelse(is.na(dat$Pump_Status_2) == TRUE, 1,
+                                  ifelse(is.na(dat$Pump_Status_3) == TRUE, 2,
+                                         ifelse(is.na(dat$Pump_Status_4) == TRUE, 3,
+                                                ifelse(is.na(dat$Pump_Status_5) == TRUE, 4, 5)))))
+  
+  
+  dat <- dat[c(1:11,22,23)]
+  return(dat)
+}
+
+#Pi2_df <- rxImport(Pi2)
+Pi2_df <- create_PumpVars(Pi2_df, c("ON", "IN SEQUENCE ON"))
+rxImport(Pi2_df, outFile = "Line2_Validate1.xdf", overwrite = T,
+         colInfo = list(NumPumpsOn = list(type = "factor", levels = c(as.character(0:6))),
+                        TotalPumps = list(type = "factor", levels = c(as.character(0:6)))))
+remove(Pi2_df)
+Pi2 <- change_Xdf("Line2_Validate.xdf", n = 1)
+
+# Create Datetime Variables
+create_DatetimeVars <- function(dat){
+  dat$LogTime <- with_tz(dat$LogTime, tzone = "MST")
+  dat$Month <- factor(month(dat$LogTime), levels = as.character(1:12))
+  dat$WeekDay <- as.factor(weekdays(dat$LogTime, abbreviate = T))
+  dat$Day <- as.factor(day(dat$LogTime))
+  dat$Hour <- as.factor(hour(dat$LogTime))
+  return(dat)
+}
+
+rxDataStep(Pi2, outFile = "Line2_Validate1.xdf", overwrite = T, transformFunc = create_DatetimeVars,
+           transformPackages = "lubridate", varsToDrop = c("LogMonth", "LogYear"))
+Pi2 <- change_Xdf("Line2_Validate.xdf", n = 1)
+
+Pi2 <- Pi2 %>% arrange(Seg, Site, LogTime)
+persist(Pi2, "Line2_Validate.xdf")
+Pi2 <- RxXdfData("Line2_Validate.xdf")
+
+# Create Differential Column
+rxDataStep(Pi2, outFile = "Line2_Validate1.xdf", overwrite = T,
+           transforms = list(differential = Discharge_Pressure - Suction_Pressure))
+rxDataStep("Line2_Validate1.xdf", outFile = "Line2_Validate2.xdf",
+           varsToDrop = c("Discharge_Pressure", "Suction_Pressure"))
+Line2 <- change_Xdf("Line2_Validate.xdf", n = 2)
+
+# Rename Columns
+plyr::rename(Pi2, c("LogTime" = "ts_pi", "Seg" = "line_segment", "Month" = "ts_month", "Flow_Rate" = "flow_rate",
+                    "DRA" = "dra", "HHPU" = "hhpu", "KW" = "kw", "NumPumpsOn" = "pump_status_on", "Hour" = "ts_hour",
+                    "TotalPumps" = "pump_total", "WeekDay" = "ts_dow", "Day" = "ts_day", "Site" = "pump_station",
+                    "differential" = "differential"))
+
+```
+
+Time to make predictions. See part 5 for more details on everything.
+
+Load Required user defined functions for making and evaluating predictions
+
+```{r Load UDFs}
+
+# Function used to create evaluation statistics for hhpu models
+Stats_Calculator <- function(xdf){
+  
+  xdf <- mutate(xdf, residuals = hhpu - hhpu_Pred)
+  hhpu_mean <- mean(xdf$hhpu)
+  SSres <- sum(xdf$residuals^2)
+  SStot <- sum((xdf$hhpu - hhpu_mean)^2)
+  p <- length(names(xdf)) - 2
+  n <- nrow(xdf)
+  
+  MAE <- sum(abs(xdf$residuals))/n
+  RMSE <- sqrt(sum(xdf$residuals^2)/n)
+  Rsquared <- 1 - SSres/SStot
+  Rsquared_adj <- Rsquared - (1 - Rsquared)*(p/(n-p-1))
+  
+  return(c(MAE,RMSE,Rsquared,Rsquared_adj))
+  
+}
+
+# Function used calculates the expected number of pumps on for each row of data.
+predict_PumpsOn <- function(dat){
+  dat$pump_status_on_Pred <- round(0*dat$prob_0 + 1*dat$prob_1 + 2*dat$prob_2 + 3*dat$prob_3 + 
+                               4*dat$prob_4 + 5*dat$prob_5 + 6*dat$prob_6)
+  dat$pump_status_on_Pred <- factor(dat$pump_status_on_Pred, levels = c(as.character(0:6)))
+  return(dat)
+}
+
+# Function used to return evaluation statistics for pump_status_on models
+Evaluation_Classification_Stats_Calc <- function(xdf){
+  
+  xdf <- rxDataStep(xdf, outFile = "df.xdf", transformVars = c("pump_status_on", "pump_status_on_Pred"),
+                    transforms = list(correct = ifelse(pump_status_on == pump_status_on_Pred, 1, 0)), overwrite = T)
+  acc <- sum(xdf$correct)/nrow(xdf)*100
+  
+  conf_mat <- rxCrossTabs(~pump_status_on_Pred:pump_status_on, xdf)
+  conf_mat <- conf_mat$counts$`pump_status_on_Pred:pump_status_on`
+  Precision <- diag(conf_mat)/rowSums(conf_mat)
+  Recall <- diag(conf_mat)/colSums(conf_mat)
+  F1 <- 2*Precision*Recall/(Precision+Recall)
+  Precision_Recall <- data.frame("Pumps_On" = c(0:6), Precision, Recall, F1)
+  
+  file.remove("df.xdf")
+  return(list("Accuracy" = acc, "Confusion_Matrix" = conf_mat,"Precision_Recall" = Precision_Recall))
+
+}
+
+```
+
+Let's first predict hhpu using actual pump status on values.
+
+```{r Predict hhpu with pump status actuals}
+
+# Load hhpu models
+load("trained_models_NoSch.Rdata")
+lm_model <- trained_models$LinMod
+glm_model <- trained_models$Glm
+dt_model <- trained_models$DTree
+df_model <- trained_models$DForest
+bdt_model <- trained_models$BTree
+
+# Save the feature we want to keep for matching later on
+features <- c("ts_pi", "line_segment", "pump_station", "hhpu")
+
+# Linear Regression
+lm_scored <- rxPredict(lm_model, Line2, extraVarsToWrite = features, outData = "Line2_Val_hhpu_lm_scored.xdf",
+                       overwrite = T)
+
+lm_Stats <- Stats_Calculator(lm_scored)
+MAE_lm <- lm_Stats[1]
+RMSE_lm <- lm_Stats[2]
+Rsquared_lm <- lm_Stats[3]
+Rsquared_adj_lm <- lm_Stats[4]
+
+# General Linear Models
+glm_scored <- rxPredict(glm_model, Line2, outData = "Line2_Val_hhpu_glm_scored.xdf", extraVarsToWrite = features,
+                        overwrite = T)
+
+glm_Stats <- Stats_Calculator(glm_scored)
+MAE_glm <- glm_Stats[1]
+RMSE_glm <- glm_Stats[2]
+Rsquared_glm <- glm_Stats[3]
+Rsquared_adj_glm <- glm_Stats[4]
+
+# Decision Tree
+dt_scored <- rxPredict(dt_model, Line2, extraVarsToWrite = features, outData = "Line2_Val_hhpu_dt_scored.xdf",
+                       overwrite = T)
+
+dt_Stats <- Stats_Calculator(dt_scored)
+MAE_dt <- dt_Stats[1]
+RMSE_dt <- dt_Stats[2]
+Rsquared_dt <- dt_Stats[3]
+Rsquared_adj_dt <- dt_Stats[4]
+
+# Decision Forest
+df_scored <- rxPredict(df_model, Line2, extraVarsToWrite = features, outData = "Line2_Val_hhpu_df_scored.xdf",
+                       overwrite = T)
+
+df_Stats <- Stats_Calculator(df_scored)
+MAE_df <- df_Stats[1]
+RMSE_df <- df_Stats[2]
+Rsquared_df <- df_Stats[3]
+Rsquared_adj_df <- df_Stats[4]
+
+# Boosted Tree
+bdt_scored <- rxPredict(bdt_model, Line2, extraVarsToWrite = features, outData = "Line2_Val_hhpu_bdt_scored.xdf",
+                        overwrite = T)
+
+bdt_Stats <- Stats_Calculator(bdt_scored)
+MAE_bdt <- bdt_Stats[1]
+RMSE_bdt <- bdt_Stats[2]
+Rsquared_bdt <- bdt_Stats[3]
+Rsquared_adj_bdt <- bdt_Stats[4]
+
+# Calculate Evaluation Statistics for hhpu predictions
+models <- c("lm", "glm", "dt", "df", "bdt")
+MAE <- c(MAE_lm, MAE_glm, MAE_dt, MAE_df, MAE_bdt)
+RMSE <- c(RMSE_lm, RMSE_glm, RMSE_dt, RMSE_df, RMSE_bdt)
+Rsquared <- c(Rsquared_lm, Rsquared_glm, Rsquared_dt, Rsquared_df, Rsquared_bdt)
+Rsquared_adj <- c(Rsquared_adj_lm, Rsquared_adj_glm, Rsquared_adj_dt, Rsquared_adj_df, Rsquared_adj_bdt)
+
+model_stats <- data.frame(models,MAE,RMSE,Rsquared,Rsquared_adj)
+write.csv(model_stats, file = "model_stats_Val_hhpu.csv", row.names = F)
+print(model_stats)
+
+# Remove models from memory once you're done with them
+remove(trained_models)
+remove(lm_model)
+remove(glm_model)
+remove(dt_model)
+remove(df_model)
+remove(bdt_model)
+
+# Rename prediction columns in our scored xdf data files
+plyr::rename(lm_scored, c("hhpu_Pred" = "hhpu_lm_Pred"))
+plyr::rename(glm_scored, c("hhpu_Pred" = "hhpu_glm_Pred"))
+plyr::rename(dt_scored, c("hhpu_Pred" = "hhpu_dt_Pred"))
+plyr::rename(df_scored, c("hhpu_Pred" = "hhpu_df_Pred"))
+plyr::rename(bdt_scored, c("hhpu_Pred" = "hhpu_bdt_Pred"))
+
+# Merge the predictions back onto the original data set for easy analysis
+rxMerge(inData1 = Line2, inData2 = lm_scored, outFile = "Line2_Validate_scored.xdf",
+        type = "left", matchVars = features)
+rxMerge(inData1 = "Line2_Validate_scored.xdf", inData2 = glm_scored, outFile = "Line2_Validate_scored1.xdf",
+        type = "left", matchVars = features)
+rxMerge(inData1 = "Line2_Validate_scored1.xdf", inData2 = dt_scored, outFile = "Line2_Validate_scored2.xdf",
+        type = "left", matchVars = features)
+rxMerge(inData1 = "Line2_Validate_scored2.xdf", inData2 = df_scored, outFile = "Line2_Validate_scored3.xdf",
+        type = "left", matchVars = features)
+rxMerge(inData1 = "Line2_Validate_scored3.xdf", inData2 = bdt_scored, outFile = "Line2_Validate_scored4.xdf",
+        type = "left", matchVars = features)
+Line2 <- change_Xdf("Line2_Validate_scored.xdf", n = 4)
+
+```
+
+Let's graph time series of hhpu vs hhpu_Pred of each model for each station by month. To keep things organized we'll split it by segment.
+
+Each chunk will represent one segment. The the color of a line is:
+* black := hhpu actual
+* red := hhpu LinMod
+* blue := hhpu Glm
+* green := hhpu DTree
+* yellow := hhpu DForest
+* pink := hhpu BTree
+
+2-EP-YP
+
+```{r hhpu vs. hhpu_Pred}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-EP-YP"))
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_lm_Pred), color = "red") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("LinMod ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_glm_Pred), color = "blue") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("Glm ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_dt_Pred), color = "green") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_df_Pred), color = "yellow") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DForest ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_bdt_Pred), color = "pink") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("BTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+```
+
+2-YP-KB
+
+```{r hhpu vs. hhpu_Pred}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-YP-KB"))
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_lm_Pred), color = "red") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("LinMod ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_glm_Pred), color = "blue") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("Glm ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_dt_Pred), color = "green") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_df_Pred), color = "yellow") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DForest ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_bdt_Pred), color = "pink") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("BTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+```
+
+2-KB-SB
+
+```{r hhpu vs. hhpu_Pred}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-KB-SB"))
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_lm_Pred), color = "red") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("LinMod ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_glm_Pred), color = "blue") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("Glm ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_dt_Pred), color = "green") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_df_Pred), color = "yellow") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DForest ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_bdt_Pred), color = "pink") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("BTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+```
+
+2-QU-CM
+
+```{r hhpu vs. hhpu_Pred}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-QU-CM"))
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_lm_Pred), color = "red") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("LinMod ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_glm_Pred), color = "blue") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("Glm ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_dt_Pred), color = "green") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_df_Pred), color = "yellow") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DForest ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_bdt_Pred), color = "pink") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("BTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+```
+
+2-CM-GF
+
+```{r hhpu vs. hhpu_Pred}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-CM-GF"))
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_lm_Pred), color = "red") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("LinMod ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_glm_Pred), color = "blue") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("Glm ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_dt_Pred), color = "green") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_df_Pred), color = "yellow") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DForest ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_bdt_Pred), color = "pink") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("BTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+```
+
+2-GF-CR
+
+```{r hhpu vs. hhpu_Pred}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-GF-CR"))
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_lm_Pred), color = "red") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("LinMod ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_glm_Pred), color = "blue") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("Glm ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_dt_Pred), color = "green") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_df_Pred), color = "yellow") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DForest ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_bdt_Pred), color = "pink") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("BTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+```
+
+2-CR-PR
+
+```{r hhpu vs. hhpu_Pred}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-CR-PR"))
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_lm_Pred), color = "red") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("LinMod ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_glm_Pred), color = "blue") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("Glm ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_dt_Pred), color = "green") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_df_Pred), color = "yellow") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("DForest ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+for(i in 1:2){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) + geom_line(aes(y = hhpu_bdt_Pred), color = "pink") + 
+    facet_wrap(~pump_station) + ggtitle(paste0("BTree ",as.character(month(i, label = T, abbr = F))))
+  plot(p)
+}
+
+```

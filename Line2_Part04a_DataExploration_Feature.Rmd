@@ -1,0 +1,482 @@
+# Part 3a - Data Exploration 1: Feature Exploration
+
+Packages required to run this script.
+
+```{r Required Packages, message=FALSE}
+
+library(dplyrXdf)
+
+```
+
+Data needed to run this script.
+
+```{r Data Load, message=FALSE}
+
+Line2 <- RxXdfData("Pi_Schedule.xdf")
+
+```
+
+## Stations on Line 2
+
+The stations found on line 2
+
+```{r Stations, message=FALSE}
+
+station <- Line2 %>% select(pump_station) %>% distinct %>% head(30)
+station <- station[[1]]
+print(station)
+
+```
+
+28 stations on line 2 (actually 30 but stations SB and IV (?) where lost when we removed Na pi tags).
+
+Number of points from each station
+
+```{r Station Porportions, message=FALSE}
+
+station_len <- rxCrossTabs(~pump_station, Line2)
+station_len <- as.vector(station_len$counts$pump_station)
+station_prop <- station_len/nrow(Line2)*100
+
+station_size <- data.frame("Station" = station, "Number of Points" = station_len, "Proportion of Points" = station_prop)
+print(station_size)
+
+```
+
+Each station takes up roughly 3-5% of the data points except for station CC which only takes up 0.6% of the data.
+##### Look into station CC
+
+## Segments on Line 2
+
+The stations found on line 2
+
+```{r Segments, message=FALSE}
+
+segment <- Line2 %>% select(line_segment) %>% distinct %>% head(30)
+segment <- segment[[1]]
+print(segment)
+
+```
+
+6 segments on line 2.
+
+Number of points from each segment
+
+```{r Segment Porportions, message=FALSE}
+
+segment_len <- rxCrossTabs(~line_segment, Line2)
+segment_len <- as.vector(segment_len$counts$line_segment)
+segment_prop <- segment_len/nrow(Line2)*100
+
+segment_size <- data.frame("Segment" = segment, "Number of Points" = segment_len, "Proportion of Points" = segment_prop)
+print(segment_size)
+
+```
+
+Segments 2-CM-CR take up a little more than half the total amount of data points. Segment 2-YP-KB takes up less than 10% of the points. The other 3 take up around 12-15% of the points each.
+
+What stations are in each segment.
+
+```{r Stations in Segment, message=FALSE}
+
+st_CM_CR <- Line2 %>% filter(line_segment == "2-CM-CR") %>% select(pump_station) %>% distinct()
+st_CM_CR <- as.character(st_CM_CR[[1]])
+st_CR_PR <- Line2 %>% filter(line_segment == "2-CR-PR") %>% select(pump_station) %>% distinct()
+st_CR_PR <- as.character(st_CR_PR[[1]])
+st_EP_YP <- Line2 %>% filter(line_segment == "2-EP-YP") %>% select(pump_station) %>% distinct()
+st_EP_YP <- as.character(st_EP_YP[[1]])
+st_KB_SB <- Line2 %>% filter(line_segment == "2-KB-SB") %>% select(pump_station) %>% distinct()
+st_KB_SB <- as.character(st_KB_SB[[1]])
+st_QU_CM <- Line2 %>% filter(line_segment == "2-QU-CM") %>% select(pump_station) %>% distinct()
+st_QU_CM <- as.character(st_QU_CM[[1]])
+st_YP_KB <- Line2 %>% filter(line_segment == "2-YP-KB") %>% select(pump_station) %>% distinct()
+st_YP_KB <- as.character(st_YP_KB[[1]])
+
+station_segment <- list("2-CM-CR" = st_CM_CR, "2-CR-PR" = st_CR_PR, "2-EP-YP" = st_EP_YP, "2-KB-SB" = st_KB_SB,
+                        "2-QU-CM" = st_QU_CM, "2-YP-KB" = st_YP_KB)
+print(station_segment)
+
+```
+
+Looking at the stations in each segment, the reason why 2-YP-KB is less than 10% is that it has station CC which lost a lot of points.
+
+Let's look at the count matrix between segment and station
+
+```{r Count btw Station and Segment, message = FALSE}
+
+rxCrossTabs(~pump_station+line_segment, Line2)
+
+```
+
+The only thing that stands out is station CC once again.
+
+## Activities
+
+The activities found on line 2
+
+```{r Activities, message=FALSE}
+
+activity <- Line2 %>% select(activity_code) %>% distinct %>% head(30)
+activity <- activity[[1]]
+print(activity)
+
+```
+
+3 acctivities on line 2 as well some NA values.
+
+Number of points from each activity
+
+```{r Activity Porportions, message=FALSE}
+
+activityl <- levels(activity)
+
+activity_len <- rxCrossTabs(~activity_code, Line2)
+activity_len <- as.vector(activity_len$counts$activity_code)
+activity_prop <- activity_len/nrow(Line2)*100
+s <- sum(activity_len)
+Na <- nrow(Line2) - s
+activityl <- c(activityl, "NA")
+activity_len <- c(activity_len, Na)
+activity_prop <- c(activity_prop, Na/nrow(Line2)*100)
+
+activity_size <- data.frame("Activity" = activityl, "Number of Points" = activity_len,
+                            "Proportion of Points" = activity_prop)
+print(activity_size)
+
+```
+
+60% of the data points are evens, 9% are injections, and 1% are receipts. The rest are NA values created because their was no matching schedule data for the pi tags. No landings or deliveries made it into the data.
+
+## Commodity Group
+
+The commodity groups pushed through line 2
+
+```{r Activities, echo=TRUE, message=FALSE, warning=FALSE}
+
+commodity <- Line2 %>% select(commodity_group) %>% distinct %>% head(30)
+commodity <- commodity[[1]]
+print(commodity)
+
+```
+
+5 commodity groups are pushed on line 2 as well some NA values.
+
+Number of points from each commodity
+
+```{r Commodity Porportions, echo=TRUE, message=FALSE, warning=FALSE}
+
+commodityl <- levels(commodity)
+
+commodity_len <- rxCrossTabs(~commodity_group, Line2)
+commodity_len <- as.vector(commodity_len$counts$commodity_group)
+commodity_prop <- commodity_len/nrow(Line2)*100
+s <- sum(commodity_len)
+Na <- nrow(Line2) - s
+commodityl <- c(commodityl, "NA")
+commodity_len <- c(commodity_len, Na)
+commodity_prop <- c(commodity_prop, Na/nrow(Line2)*100)
+
+commodity_size <- data.frame("Commodity Group" = commodityl, "Number of Points" = commodity_len,
+                            "Proportion of Points" = commodity_prop)
+print(commodity_size)
+
+```
+
+The majority of commodities pushed on Line 2 belong to the groups LightSweet and LightSynthetic. Condensate and LightSour are pushed as well occasionally. Once again 30% of the data points are Na's due to the join between schedule and pi data.
+
+```{r Commodity by Station and Segment Count, echo=FALSE, warning=FALSE}
+
+rxHistogram(~commodity_group|pump_station,Line2)
+rxHistogram(~commodity_group|line_segment,Line2)
+
+```
+
+Due to the issues with merging the schedule and pi data, analyzing the commodity group and activity might not be a god idea yet as it probably isn't accurate.
+
+## Flow_Rate
+
+Let's explore the distribution of flow_rate
+
+```{r Flow_Rate Distribution, echo=TRUE, message=FALSE}
+
+rxHistogram(~ flow_rate, Line2)
+
+```
+
+3 Hills stand out. The largest is at 0 which says that there was nothing flowing along line 2 for a significant portion of time. Their are smaller humps around flow rate 1500 and 3000.
+
+Let's filter by station now
+
+```{r Flow by Station, echo=TRUE, message=FALSE}
+
+rxHistogram(~ flow_rate | pump_station, Line2)
+
+```
+
+Of the 28 graphs, there are two patterns. Either the graphs have two humps at 0 and 1500 or 1 hump at 3000.
+
+Let's filter by segment now
+
+```{r Flow by Segment, echo=TRUE, message=FALSE}
+
+rxHistogram(~ flow_rate | line_segment, Line2)
+
+```
+
+Segments 2-CM-CR and 2-CR-PR have humps around 3000 with few points flow_rate = 0. Segment 2-YP-KB have almost all points flow_rate = 0. The others seem to match the other graph type with humps at 0, 1500, and 3000.
+
+Let's compute the percentage of data points for Line 2 where flow_rate = 0
+
+```{r Flow = 0, message = FALSE}
+
+Line2_flow0 <- rxDataStep(Line2, outFile = "Line2_flow0.xdf", rowSelection = (flow_rate == 0) , overwrite = T)
+n_flow0 <- nrow(Line2_flow0)
+p_flow0 <- n_flow0/nrow(Line2)*100
+cat("The percentage of points where flow = 0 is ", round(p_flow0,2), "%", sep = "")
+
+```
+
+Roughly 20% of the data has flow_rate = 0%
+
+Let's compute this for each station
+
+```{r Flow = 0 by Station, echo=TRUE, message=FALSE, warning=FALSE}
+
+station_len0 <- rxCrossTabs(~pump_station, Line2_flow0)
+station_len0 <- as.vector(station_len0$counts$pump_station)
+station_prop0 <- station_len0/station_len*100
+
+station_size <- data.frame("Station" = station, "Number of Points" = station_len0, "Porportion" = station_prop0)
+print(station_size)
+
+```
+
+Some stations the percentage of data points where flow_rate = 0 is between 2-6%. Some stations the percentage of points is between 20-30%. For stations CC, ME, and YP the percentage is between 45-48%.
+######NOTE: look into stations CC, ME, YP
+
+##Number of pumps on
+
+Let's look at the distribution of pumps
+
+
+```{r Pump_status_on Counts, echo=TRUE, message=FALSE, warning=FALSE}
+
+pump <- Line2 %>% select(pump_status_on) %>% distinct %>% head(10)
+pump <- as.character(pump[[1]])
+pump <- c(pump,6)
+pump_len <- rxCrossTabs(~pump_status_on, Line2)
+pump_len <- as.vector(pump_len$counts$pump_status_on)
+pump_prop <- round(pump_len/nrow(Line2)*100,2)
+
+pump_size <- data.frame("Pump" = pump, "Number of Points" = pump_len, "Proportion of Points" = pump_prop)
+print(pump_size)
+
+```
+
+```{r Pumps On Count by Station, echo=TRUE, message=FALSE}
+
+rxCrossTabs(~pump_status_on:pump_station,Line2)
+
+```
+
+```{r Pumps On Distribution by Station, echo=TRUE, message=FALSE}
+
+rxHistogram(~pump_status_on|pump_station,Line2)
+
+```
+
+```{r PumpsOn Counts by Segment, echo=TRUE}
+
+rxCrossTabs(~pump_status_on:line_segment,Line2)
+
+```
+
+```{r PumpsOn by Segment, echo=TRUE, message=FALSE, warning=FALSE}
+
+rxHistogram(~pump_status_on|line_segment,Line2)
+
+```
+
+```{r NumPumpsOn Counts by segment and station, echo=TRUE, message=FALSE, warning=FALSE}
+
+rxCube(~line_segment:pump_station:pump_status_on, Line2, removeZeroCounts = T )
+
+```
+
+
+```{r NumPumpsOn Distribution by Segment and Station, echo=TRUE, message=FALSE, warning=FALSE}
+
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment==seg[1]),
+            transformObjects = list(seg = segment), title = "2-CM-CR")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment==seg[2]),
+            transformObjects = list(seg = segment), title = "2-CR-PR")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment==seg[3]),
+            transformObjects = list(seg = segment), title = "2-EP-YP")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment==seg[4]),
+            transformObjects = list(seg = segment), title = "2-KB-SB")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment==seg[5]),
+            transformObjects = list(seg = segment), title = "2-QU-CM")
+rxHistogram(~pump_status_on|pump_station, Line2, rowSelection = (line_segment==seg[6]),
+            transformObjects = list(seg = segment), title = "2-YP-KB")
+
+```
+
+Let's look at how flow rate is affected by num of pumps on
+
+```{r Flow Distribution by Num Pumps On, message=FALSE}
+
+rxHistogram(~flow_rate|pump_status_on,Line2)
+
+```
+
+It looks like the vast majority of data points where flow = 0 correspond to having pump_status_on = 0 as well. Let's investigate this further.
+
+```{r Flow = 0 by pump_status_on, echo=TRUE, message=FALSE, warning=FALSE}
+
+rxHistogram(~flow_rate|pump_status_on,Line2_flow0)
+
+```
+
+```{r Flow = 0 by pump_status_on Counts, echo=TRUE, message=FALSE, warning=FALSE}
+
+pump <- Line2_flow0 %>% select(pump_status_on) %>% distinct %>% head(10)
+pump <- as.character(pump[[1]])
+pump <- c(pump,5,6)
+pump_len_flow0 <- rxCrossTabs(~pump_status_on, Line2_flow0)
+pump_len_flow0 <- as.vector(pump_len_flow0$counts$pump_status_on)
+pump_prop_flow0 <- round(pump_len_flow0/nrow(Line2_flow0)*100,2)
+
+pump_size_flow0 <- data.frame("Pump" = pump, "Number of Points" = pump_len_flow0, "Proportion of Points" = pump_prop_flow0)
+print(pump_size_flow0)
+
+```
+
+99% of the points where flow = 0, every pump was off. This makes sense.
+
+## Total Pumps
+
+Let's look at the count and distribution of total pumps
+
+```{r Total Pumps Count, echo=TRUE, warning=FALSE}
+
+tpump <- Line2 %>% select(pump_total) %>% distinct %>% head(10)
+tpump <- as.character(tpump[[1]])
+tpump <- c(tpump,6)
+tpump_len <- rxCrossTabs(~pump_total, Line2)
+tpump_len <- as.vector(tpump_len$counts$pump_total)
+tpump_prop <- round(tpump_len/nrow(Line2)*100,2)
+
+tpump_size <- data.frame("Pump" = tpump, "Number of Points" = tpump_len, "Proportion of Points" = tpump_prop)
+print(tpump_size)
+
+
+```
+
+Let's look at this count by station
+
+```{r Total Pumps by Station and Segment, echo=FALSE, warning=FALSE}
+
+rxCrossTabs(~pump_station:pump_total:line_segment,Line2,removeZeroCounts = T, marginals = T)
+
+```
+
+For every station, approximately 100% of the points all have the same total pump number which makes sense. However for a couple of the stations, a handful (5 or 6) of points state the station has zero points. Let's look further into these rows.
+
+```{r Stations where Total_Pumps = 0, echo=FALSE, warning=FALSE}
+
+tpumps0 <- rxDataStep(Line2, outFile = "Line2_tpumps0.xdf", rowSelection = (pump_total == 0), overwrite = T)
+nrow(tpumps0)
+tpumps0 %>% select(pump_station) %>% distinct %>% head(30)
+tpumps0 %>% filter(pump_station == "CM") %>% head(10)
+tpumps0 %>% filter(pump_station == "DN") %>% head(10)
+tpumps0 %>% filter(pump_station == "LP") %>% head(10)
+tpumps0 %>% filter(pump_station == "KB") %>% head(10)
+tpumps0 %>% filter(pump_station == "AP") %>% head(10)
+
+```
+
+######We can either just remove these rows or try to fix them logically by replacing pump_total with the actual pump total for that station and pump_status_on with the previous one.
+
+Let's look at flow by total_pumps
+
+```{r Flow Distribution by Total_Pumps, echo=FALSE, warning=FALSE}
+
+rxHistogram(~flow_rate|pump_total, Line2)
+
+```
+
+Flow and pump_total are most likely not related so let's move on.
+
+Let's look at flow vs. the datetime features
+
+```{r Flow by Datetime Distribution}
+
+rxHistogram(~flow_rate|ts_day, Line2, title = "Day")
+rxHistogram(~flow_rate|ts_dow, Line2, title = "Day of Week")
+rxHistogram(~flow_rate|ts_hour, Line2, title = "Hour")
+rxHistogram(~flow_rate|ts_month, Line2 , title = "Month")
+
+```
+
+There doesn't seem to be any interaction between flow and the datetime values.
+
+##DRA
+
+Distribution of DRA
+
+```{r DRA Distribution, echo=FALSE}
+
+rxHistogram(~dra,Line2)
+
+```
+
+Majority of the data points seem to have dra = 0 but let's confirm
+
+```{r dra = 0 porportion, echo=FALSE, r dra=0 porportion}
+
+dra0 <- Line2 %>% filter(dra == 0)
+cat("the percentage of points where dra was 0 is ", round(nrow(dra0)/nrow(Line2)*100,2), "%", sep = "")
+
+```
+
+So for a little more then half the data points, no dra was used. Let's investigate dra further by segment and station.
+
+```{r Dra Distribution by Segment and Station, echo=FALSE, warning=FALSE}
+
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-CM-CR"), title = "2-CM-CR")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-CR-PR"), title = "2-CR-PR")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-EP-YP"), title = "2-EP-YP")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-KB-SB"), title = "2-KB-SB")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-QU-CM"), title = "2-QU-CM")
+rxHistogram(~dra|pump_station, Line2, rowSelection = (line_segment=="2-YP-KB"), title = "2-YP-KB")
+
+
+```
+
+It appears that segments 2-CM-CR and 2-CR-PR are the only two segments which use DRA more often than not. The other segments seem to only use it sporatically.
+
+Let's look at dra by commodiy group. DRA might be used for specific commodities.
+
+```{r dra by commodity group, echo=FALSE}
+
+rxHistogram(~dra|commodity_group, Line2)
+
+```
+
+Seems like all the data points with dra were the commodity groups with NA values.
+
+## Datetime features
+
+Let's look at counts of the datetime features just to make sure there aren't any issues.
+
+```{r Datetime}
+
+rxCrossTabs(~ts_day,Line2)
+rxCrossTabs(~ts_dow,Line2)
+rxCrossTabs(~ts_hour,Line2)
+rxCrossTabs(~ts_month,Line2)
+
+```
+
+The counts are all approximately the same so it seems to be okay.
+

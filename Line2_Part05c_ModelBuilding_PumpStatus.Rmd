@@ -1,0 +1,254 @@
+# Part 4c - Number of Pumps On Predictor
+
+Required packages
+
+```{r Required Packages, message=FALSE}
+
+library(plyr)
+library(dplyrXdf)
+
+```
+
+Xdf data files used to build pump on predictor models. Since we are only using Site and flow rate, we will use Line2.xdf
+
+```{r Data Files, message=FALSE}
+
+Line2 <- RxXdfData("Line2.xdf")
+train <- RxXdfData("Line2_NoSch_train.xdf")
+test <- RxXdfData("Line2_NoSch_test.xdf")
+
+```
+
+# Preparation
+
+Split Data into training and test sets stratified by station. We'll use 75% of the data for training and the remaining data for testing purposes. To do this, we will load the data into memory and use a user-defined function.
+
+NOTE: I ran into memory issues while model training so I had to specifically chunk the training data, maxing each chunk at a million rows. Before we were allowing R server to load all the data into one chunk in an xdf file and it was working fine. The training data will be split into 12 chunks within the xdf file. This worked as a workaround to the memory issue.
+
+NOTE: If you've run the script for model building on data without schedule data then you don't need to run this data. Just load train <- Line2_NoSch_train.xdf and test <- Line2_NoSch_test.xdf
+
+```{r Strata Split, message=FALSE}
+
+split_strata_st = function(df=Line2_df,st='station',p=0.75){
+  
+  str <- st
+  train <- df[0,]
+  test <- df[0,]
+  stu <- unique(df[str])
+  len <- nrow(stu)
+  for (i in 1:len) {
+    
+    dfx <- subset(df,df[,str]==stu[i,1])
+    
+    tr <- floor(nrow(dfx)*p)
+    te <- nrow(dfx) - tr
+    
+    s <- sample(c(rep(1,tr),rep(0,te)))
+    dftr <- subset(dfx,s==1)
+    dfte <- subset(dfx,s==0)
+    
+    train <- rbind(train,dftr)
+    test <- rbind(test,dfte)
+    
+  }
+  
+  return(list(train,test))
+  
+}
+
+Line2_df <- rxImport(Line2)
+train_test <- split_strata_st(Line2_df,'pump_station',0.75)
+train <- rxImport(inData = as.data.frame(train_test[1]), outFile='Line2_NoSch_train.xdf', stringsAsFactors = T,
+                  rowsPerRead = 1000000)
+test <- rxImport(inData = as.data.frame(train_test[2]), outFile='Line2_NoSch_test.xdf', stringsAsFactors = T)
+remove(Line2_df)
+remove(train_test)
+
+```
+
+Since the formula is basic, we won't use a function to define it. NOTE: station*flow = station + flow + station:flow (interaction between station and flow).
+
+```{r Formula Creation, message=FALSE}
+
+formula <- as.formula("pump_status_on ~ pump_station + flow_rate + line_segment + dra")
+
+```
+
+# Model Creation and Scoring
+
+We'll first need to define a couple user defined functions. The first is our rename and remove xdf file function, see Data Exploration_Raw Data.Rmd for more detail. The 2nd one is required because R will only return the probability for that n number of pumps are on for a given flow rate and site. This function will return the expected number of pumps on.
+
+```{r User Defined Functions Function, message=FALSE}
+
+# Function used to rename xdf files
+change_Xdf <- function(starting_filename = "Line2.xdf", final_filename = starting_filename, n = 1){
+  
+  xdf <- starting_filename
+  xdf_name <- substr(xdf, 1, nchar(xdf) - 4)
+  xdf_ext <- ".xdf"
+  i <- 0
+  
+  while (i < n){
+    if (i == 0){
+      file.remove(xdf)
+      i <- i + 1
+    }
+    else {
+      xdf_str <- paste0(xdf_name,i,xdf_ext)
+      file.remove(xdf_str)
+      i <- i + 1
+    }
+  }
+  
+  xdf_str <- paste0(xdf_name,i,xdf_ext)
+  file.rename(xdf_str, final_filename)
+  return(RxXdfData(final_filename))
+  
+}
+
+# Function used calculates the expected number of pumps on for each row of data.
+predict_PumpsOn <- function(dat){
+  dat$pump_status_on_Pred <- round(0*dat$prob_0 + 1*dat$prob_1 + 2*dat$prob_2 + 3*dat$prob_3 + 
+                               4*dat$prob_4 + 5*dat$prob_5 + 6*dat$prob_6)
+  dat$pump_status_on_Pred <- factor(dat$pump_status_on_Pred, levels = c(as.character(0:6)))
+  return(dat)
+}
+
+# Function used to return evaluation statistics
+Evaluation_Classification_Stats_Calc <- function(xdf){
+  
+  xdf <- rxDataStep(xdf, outFile = "df.xdf", transformVars = c("pump_status_on", "pump_status_on_Pred"),
+                    transforms = list(correct = ifelse(pump_status_on == pump_status_on_Pred, 1, 0)), overwrite = T)
+  acc <- sum(xdf$correct)/nrow(xdf)*100
+  
+  conf_mat <- rxCrossTabs(~pump_status_on_Pred:pump_status_on, xdf)
+  conf_mat <- conf_mat$counts$`pump_status_on_Pred:pump_status_on`
+  Precision <- diag(conf_mat)/rowSums(conf_mat)
+  Recall <- diag(conf_mat)/colSums(conf_mat)
+  F1 <- 2*Precision*Recall/(Precision+Recall)
+  Precision_Recall <- data.frame("Pumps_On" = c(0:6), Precision, Recall, F1)
+  
+  file.remove("df.xdf")
+  return(list("Accuracy" = acc, "Confusion_Matrix" = conf_mat,"Precision_Recall" = Precision_Recall))
+
+}
+
+```
+
+Building Our Models:
+
+1. Decision Tree
+
+```{r Decision Tree, message=FALSE}
+
+s <- Sys.time()
+dt_PumpsOn_model <- rxDTree(formula, minBucket = 10, data = train, reportProgress = 0)
+dt_time <- Sys.time() - s
+
+dt_scored <- rxPredict(dt_PumpsOn_model, test, writeModelVars = T, outData = "Line2_PumpsOn_dt_scored.xdf",
+                       extraVarsToWrite = c("ts_pi", "line_segment", "ts_month"))
+plyr::rename(dt_scored, c("0_prob" = "prob_0", "1_prob" = "prob_1", "2_prob" = "prob_2", "3_prob" = "prob_3",
+                          "4_prob" = "prob_4", "5_prob" = "prob_5", "6_prob" = "prob_6"))
+rxDataStep(dt_scored, outFile = "Line2_PumpsOn_dt_scored1.xdf", transformFunc = predict_PumpsOn)
+rxDataStep("Line2_PumpsOn_dt_scored1.xdf", outFile = "Line2_PumpsOn_dt_scored2.xdf",
+           varsToDrop = c("prob_0", "prob_1", "prob_2", "prob_3", "prob_4", "prob_5", "prob_6"))
+dt_scored <- change_Xdf("Line2_PumpsOn_dt_scored.xdf", n = 2)
+
+dt_eval <- Evaluation_Classification_Stats_Calc(dt_scored)
+dt_acc <- dt_eval[1]$Accuracy
+dt_conf_mat <- dt_eval[2]$Confusion_Matrix
+dt_prec_rec <- dt_eval[3]$Precision_Recall
+
+```
+
+2. Decision Forest
+
+```{r Decision Forest}
+
+s <- Sys.time()
+df_PumpsOn_model <- rxDForest(formula, nTree = 16, importance = T, data = train, reportProgress = 0,
+                              minBucket = 64, minSplit = 113950, maxDepth = 2)
+df_time <- Sys.time() - s
+
+df_scored <- rxPredict(df_PumpsOn_model, test, writeModelVars = T, outData = "Line2_PumpsOn_df_scored.xdf")
+
+df_eval <- Evaluation_Classification_Stats_Calc(df_scored)
+df_acc <- df_eval[1]$Accuracy
+df_conf_mat <- df_eval[2]$Confusion_Matrix
+df_prec_rec <- df_eval[3]$Precision_Recall
+
+```
+
+3 Boosted Decision Tree
+
+```{r Boosted Decision Tree, message=FALSE}
+
+s <- Sys.time()
+bdt_PumpsOn_model <- rxBTrees(formula, nTree = 50, importance = T, data = train, reportProgress = 0,
+                              lossFunction = "gaussian", maxDepth = 3, minSplit = 113950)
+bdt_time <- Sys.time() - s
+
+bdt_scored <- rxPredict(bdt_PumpsOn_model, test, writeModelVars = T, outData = "Line2_PumpsOn_bdt_scored.xdf")
+rxDataStep(bdt_scored, outFile = "Line2_PumpsOn_bdt_scored1.xdf",
+           transforms = list(pump_status_on_Pred = factor(round(pump_status_on_Pred,0), levels = c(0:6))))
+bdt_scored <- change_Xdf("Line2_PumpsOn_bdt_scored.xdf", n = 1)
+
+bdt_eval <- Evaluation_Classification_Stats_Calc(bdt_scored)
+bdt_acc <- bdt_eval[1]$Accuracy
+bdt_conf_mat <- bdt_eval[2]$Confusion_Matrix
+bdt_prec_rec <- bdt_eval[3]$Precision_Recall
+
+```
+
+4 Bayesian Classification
+NOTE: Issues with this model so I needed to fill in the eval stats with zero's.
+
+```{r Baye}
+
+s <- Sys.time()
+bc_PumpsOn_model <- rxNaiveBayes(formula, train)
+bc_time <- Sys.time() - s
+
+bc_scored <- rxPredict(bc_PumpsOn_model, test, writeModelVars = T, outData = "Line2_PumpsOn_bc_scored.xdf",
+                       extraVarsToWrite = c("pump_status_on"))
+
+#bc_eval <- Evaluation_Classification_Stats_Calc(bc_scored)
+bc_acc <- 0 #bc_eval[1]$Accuracy
+bc_conf_mat <- 0 #bc_eval[2]$Confusion_Matrix
+bc_prec_rec <- 0 #bc_eval[3]$Precision_Recall
+
+```
+
+We can now combine our evaluation results into one single dataframe for easy comparison.
+
+```{r Evaluation Statistics, message=FALSE}
+
+Training_Time <- c(dt_time, df_time, bdt_time, bc_time)
+units(Training_Time) <- "mins"
+Models <- c("dt", "df", "bdt", "bc")
+Accuracy <- c(dt_acc, df_acc, bdt_acc, bc_acc)
+Model_Accuracy <- data.frame(Models, Training_Time, Accuracy)
+Model_Confusion_Matrix <- list("dt" = dt_conf_mat, "df" = df_conf_mat, "bdt" = bdt_conf_mat, "bc" = bc_conf_mat)
+Model_Precision_Recall <- list("dt" = dt_prec_rec, "df" = df_prec_rec, "bdt" = bdt_prec_rec, "bc" = bc_prec_rec)
+
+write.csv(Model_Accuracy, file = "PumpsOn_Model_Accuracy.csv", row.names = F)
+save(Model_Confusion_Matrix, file = "PumpsOn_Model_Conf_Mat.Rdata")
+save(Model_Precision_Recall, file = "PumpsOn_Model_Prec_Rec.Rdata")
+
+```
+
+Save our models
+
+```{r Save Models}
+
+PumpsOn_Models <- list(DTree = dt_PumpsOn_model, DForest = df_PumpsOn_model,
+                       BTree = bdt_PumpsOn_model, NaiveBayes = bc_PumpsOn_model)
+save(PumpsOn_Models, file = "trained_pumps_on_models.Rdata")
+
+remove(PumpsOn_Models)
+remove(dt_PumpsOn_model)
+remove(df_PumpsOn_model)
+remove(bdt_PumpsOn_model)
+remove(bc_PumpsOn_model)
+
+```

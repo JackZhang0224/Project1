@@ -1,0 +1,243 @@
+# PART 4b - MODEL BUILDING with No Schedule data
+
+Let's build some models using no schedule data
+
+```{r Required Packages}
+
+library(dplyrXdf)
+
+```
+
+Xdf data files used to build Line 2 models
+
+```{r Data Files, message=FALSE}
+
+Line2 <- RxXdfData("Line2.xdf")
+
+```
+
+# Preparation
+
+Split Data into training and test sets stratified by station. We'll use 75% of the data for training and the remaining data for testing purposes. To do this, we will load the data into memory and use a user-defined function.
+
+NOTE: I ran into memory issues initially so I had to specifically chunk the training data, maxing each chunk at a million rows. Before we were allowing R server to load all the data into one chunk in an xdf file and it was working fine. The training data will be split into 12 chunks within the xdf file. This worked as a workaround to the memory issue.
+
+```{r Strata Split, message=FALSE}
+
+split_strata_st = function(df=Line2_df,st='station',p=0.75){
+  
+  str <- st
+  train <- df[0,]
+  test <- df[0,]
+  stu <- unique(df[str])
+  len <- nrow(stu)
+  for (i in 1:len) {
+    
+    dfx <- subset(df,df[,str]==stu[i,1])
+    
+    tr <- floor(nrow(dfx)*p)
+    te <- nrow(dfx) - tr
+    
+    s <- sample(c(rep(1,tr),rep(0,te)))
+    dftr <- subset(dfx,s==1)
+    dfte <- subset(dfx,s==0)
+    
+    train <- rbind(train,dftr)
+    test <- rbind(test,dfte)
+    
+  }
+  
+  return(list(train,test))
+  
+}
+
+Line2_df <- rxImport(Line2)
+train_test <- split_strata_st(Line2_df,'pump_station',0.75)
+train <- rxImport(inData = as.data.frame(train_test[1]), outFile='Line2_NoSch_train.xdf', stringsAsFactors = T, overwrite=T)
+test <- rxImport(inData = as.data.frame(train_test[2]), outFile='Line2_NoSch_test.xdf', stringsAsFactors = T, overwrite=T)
+remove(Line2_df)
+remove(train_test)
+
+rxDataStep(train, outFile = "Line2_NoSch_train1.xdf", rowsPerRead = 1000000)
+file.remove("Line2_NoSch_train.xdf")
+file.rename("Line2_NoSch_train1.xdf", "Line2_NoSch_train.xdf")
+train <- RxXdfData("Line2_NoSch_train.xdf")
+
+```
+
+Using a function, create the formula we will use in our machine learning process.
+
+```{r Formula Creation, message=FALSE}
+
+make_formula <- function (xdf = Line2, resp_var = "hhpu", vars_to_skip = c()) {
+  
+  features <- names(xdf)
+  features <- features[features != resp_var]
+  features <- subset(features,!(features %in% vars_to_skip))
+  
+  formula <- as.formula(paste(resp_var, paste0(features,collapse = " + "), sep = " ~ "))
+  return(formula)
+  
+}
+
+formula <- make_formula(Line2, "hhpu", c("ts_pi", "kw","differential", "observed_vol", "observed_ind", "pump_total"))
+
+```
+
+# Model Creation and Scoring
+
+We'll use this function to calculate statistics/metrics used to evaluate the models. This uses mutate from the dplyrXdf package.
+
+```{r Evaluation Statistics Function, message=FALSE}
+
+Stats_Calculator <- function(xdf){
+  
+  xdf <- mutate(xdf, residuals = hhpu - hhpu_Pred)
+  hhpu_mean <- mean(xdf$hhpu)
+  SSres <- sum(xdf$residuals^2)
+  SStot <- sum((xdf$hhpu - hhpu_mean)^2)
+  p <- length(names(xdf)) - 2
+  n <- nrow(xdf)
+  
+  MAE <- sum(abs(xdf$residuals))/n
+  RMSE <- sqrt(sum(xdf$residuals^2)/n)
+  Rsquared <- 1 - SSres/SStot
+  Rsquared_adj <- Rsquared - (1 - Rsquared)*(p/(n-p-1))
+  
+  return(c(MAE,RMSE,Rsquared,Rsquared_adj))
+  
+}
+
+```
+
+Building our Models:
+
+1 Linear Regression
+
+```{r Linear Regression, message=FALSE}
+
+s <- Sys.time()
+lm_model_NoSch <- rxLinMod(formula, data = train)
+lm_time <- Sys.time() - s
+
+lm_scored <- rxPredict(lm_model_NoSch, test, writeModelVars = T, outData = "Line2_NoSch_lm_scored.xdf", overwrite = T)
+
+lm_Stats <- Stats_Calculator(lm_scored)
+MAE_lm <- lm_Stats[1]
+RMSE_lm <- lm_Stats[2]
+Rsquared_lm <- lm_Stats[3]
+Rsquared_adj_lm <- lm_Stats[4]
+
+```
+
+2 Generalized Linear Model
+
+
+```{r Generalized Linear Model, message=FALSE}
+
+s <- Sys.time()
+glm_model_NoSch <- rxGlm(formula, data = train)
+glm_time <- Sys.time() - s
+
+glm_scored <- rxPredict(glm_model_NoSch, test, writeModelVars = T, outData = "Line2_NoSch_glm_scored.xdf", overwrite = T)
+
+glm_Stats <- Stats_Calculator(glm_scored)
+MAE_glm <- glm_Stats[1]
+RMSE_glm <- glm_Stats[2]
+Rsquared_glm <- glm_Stats[3]
+Rsquared_adj_glm <- glm_Stats[4]
+
+```
+
+3 Decision Tree
+
+```{r Decision Tree, message=FALSE}
+
+s <- Sys.time()
+dt_model_NoSch <- rxDTree(formula, minBucket = 10, data = train)
+dt_time <- Sys.time() - s
+
+dt_scored <- rxPredict(dt_model_NoSch, test, writeModelVars = T, outData = "Line2_NoSch_dt_scored.xdf",
+                       overwrite = T)
+
+dt_Stats <- Stats_Calculator(dt_scored)
+MAE_dt <- dt_Stats[1]
+RMSE_dt <- dt_Stats[2]
+Rsquared_dt <- dt_Stats[3]
+Rsquared_adj_dt <- dt_Stats[4]
+
+```
+
+4 Decision Forest
+
+```{r Decision Forest, message=FALSE}
+
+s <- Sys.time()
+df_model_NoSch <- rxDForest(formula, nTree = 16, importance = T, data = train, reportProgress = 0,
+                      minBucket = 64, minSplit = 113945, maxDepth = 9)
+df_time <- Sys.time() - s
+
+df_scored <- rxPredict(df_model_NoSch, test, writeModelVars = T, outData = "Line2_NoSch_df_scored.xdf", overwrite = T)
+
+df_Stats <- Stats_Calculator(df_scored)
+MAE_df <- df_Stats[1]
+RMSE_df <- df_Stats[2]
+Rsquared_df <- df_Stats[3]
+Rsquared_adj_df <- df_Stats[4]
+
+```
+
+5 Boosted Decision Tree
+
+```{r Boosted Decision Tree, message=FALSE}
+
+s <- Sys.time()
+bdt_model_NoSch <- rxBTrees(formula, nTree = 50, importance = T, data = train, reportProgress = 0,
+                            lossFunction = "gaussian", maxDepth = 10, minSplit = 113945)
+bdt_time <- Sys.time() - s
+
+bdt_scored <- rxPredict(bdt_model_NoSch, test, writeModelVars = T, outData = "Line2_NoSch_bdt_scored.xdf", overwrite = T)
+
+bdt_Stats <- Stats_Calculator(bdt_scored)
+MAE_bdt <- bdt_Stats[1]
+RMSE_bdt <- bdt_Stats[2]
+Rsquared_bdt <- bdt_Stats[3]
+Rsquared_adj_bdt <- bdt_Stats[4]
+
+```
+
+We can now combine our evaluation results into one single dataframe for easy comparison.
+
+```{r Evaluation Statistics, message=FALSE}
+
+models <- c("lm", "glm", "dt", "df", "bdt")
+model_times <- c(lm_time, glm_time, dt_time, df_time, bdt_time)
+units(model_times) <- "mins"
+
+MAE <- c(MAE_lm, MAE_glm, MAE_dt, MAE_df, MAE_bdt)
+RMSE <- c(RMSE_lm, RMSE_glm, RMSE_dt, RMSE_df, RMSE_bdt)
+Rsquared <- c(Rsquared_lm, Rsquared_glm, Rsquared_dt, Rsquared_df, Rsquared_bdt)
+Rsquared_adj <- c(Rsquared_adj_lm, Rsquared_adj_glm, Rsquared_adj_dt, Rsquared_adj_df, Rsquared_adj_bdt)
+
+model_stats <- data.frame(models,model_times,MAE,RMSE,Rsquared,Rsquared_adj)
+write.csv(model_stats, file = "model_stats_NoSch.csv", row.names = F)
+print(model_stats)
+
+```
+
+Save the models into an RData file so it can be used outside this workspace.
+
+```{r Save Models}
+
+trained_models <- list(LinMod = lm_model_NoSch, Glm = glm_model_NoSch, DTree = dt_model_NoSch,
+                       DForest = df_model_NoSch, BTree = bdt_model_NoSch)
+save(trained_models, file = "trained_models_NoSch.Rdata")
+
+remove(trained_models)
+remove(lm_model_NoSch)
+remove(glm_model_NoSch)
+remove(dt_model_NoSch)
+remove(df_model_NoSch)
+remove(bdt_model_NoSch)
+
+```

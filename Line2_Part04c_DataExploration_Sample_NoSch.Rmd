@@ -1,0 +1,307 @@
+# Part 3c - Data Exploration_Sampled
+
+Required Packages
+
+```{r Required Packages}
+
+library(dplyrXdf)
+library(ggplot2)
+library(lubridate)
+
+```
+
+Data to be loaded. We created a new dataset during data_exploration_feature which added columns for pump station type as well as indicators for where each station lies along the line. We'll use that data set here.
+
+```{r Load Data}
+
+Line2 <- RxXdfData("Line2_Seq.xdf")
+
+```
+
+Since we have so many data points, we need to take a sample of the data if we want to do any scatter plots, etc. For consistency we need to set a seed.
+
+```{r Sample Data}
+
+sample_df <- function(df=Line2_df,st='pump_station',p=0.01){
+  
+  str <- st
+  sdf <- df[0,]
+  stu <- unique(df[str])
+  len <- nrow(stu)
+  for (i in 1:len) {
+    
+    dfx <- subset(df,df[,str]==stu[i,1])
+    
+    tr <- floor(nrow(dfx)*p)
+    te <- nrow(dfx) - tr
+    
+    s <- sample(c(rep(1,tr),rep(0,te)))
+    sdfx <- subset(dfx,s==1)
+    
+    sdf <- rbind(sdf,sdfx)
+    
+  }
+  
+  return(sdf)
+  
+}
+
+set.seed(123)
+Line2_df <- rxImport(Line2)
+Line2_sdf <- sample_df(Line2_df)
+remove(Line2_df)
+
+```
+
+Let's look at a scatter plot of HHPU vs. Flow
+
+```{r HHPU vs Flow}
+
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu)) + geom_point()
+
+```
+
+We can see a parabolic relationship between flow_rate and hhpu.
+
+Let's filter by segment and station.
+
+```{r HHPU vs. Flow by Segment and Station}
+
+segment <- Line2_sdf %>% select(line_segment) %>% distinct
+segment <- as.character(segment[[1]])
+
+for (i in 1:length(segment)){
+  p <- ggplot(subset(Line2_sdf, line_segment == segment[i]), aes(x = flow_rate, y = hhpu)) + geom_point() +
+    facet_wrap(~pump_station) + ggtitle(segment[i])
+  plot(p)
+}
+
+```
+
+For some station a linear relationship between flow and hhpu exists, for others a more parabolic relationsip appears to exist.
+
+Let's do the same thing but use color for the stations instead of splitting into different graphs
+
+```{r HHPU vs. Flow by Segment and Station Color}
+
+segment <- Line2_sdf %>% select(line_segment) %>% distinct
+segment <- as.character(segment[[1]])
+
+for (i in 1:length(segment)){
+  p <- ggplot(subset(Line2_sdf, line_segment == segment[i]), aes(x = flow_rate, y = hhpu, color = pump_station)) + geom_point() + 
+    ggtitle(segment[i])
+  plot(p)
+}
+
+```
+
+The relationship between flow and station seems to change for some of the stations. Some of the stations seem to have a parabolic relationship between flow and hhpu, others linear. There little differences between the stations with a parabolic relationship and between stations with linear.
+
+Let's look at hhpu vs flow for pump_status_on
+
+```{r HHPU vs Flow by pump_status_on}
+
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu)) + geom_point() + facet_wrap(~pump_status_on)
+
+```
+
+Let's use color this time to look at flow vs hhpu by pump_status_on
+
+```{r Flow vs HHPU by pump_status_on Color}
+
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu, color = pump_status_on)) + geom_point()
+
+```
+
+Clearly the num_pump_status_on matters for the relationship between flow_rate and hhpu
+
+Let's look at how the datetime features affect the relationship between hhpu and flow by using facet
+
+```{r Flow vs HHPU by Datetime Facet}
+
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu)) + geom_point() + facet_wrap(~ts_day) + ggtitle("Day of Month")
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu)) + geom_point() + facet_wrap(~ts_dow) + ggtitle("Day of Week")
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu)) + geom_point() + facet_wrap(~ts_hour) + ggtitle("Hour of Day")
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu)) + geom_point() + facet_wrap(~ts_month) + ggtitle("Month")
+
+```
+
+and by color for each datetime feature
+
+```{r Flow vs HHPU by Datetime Color}
+
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu, color = ts_day)) + geom_point() + ggtitle("Day of Month")
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu, color = ts_dow)) + geom_point() + ggtitle("Day of Week")
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu, color = ts_hour)) + geom_point() + ggtitle("Hour of Day")
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu, color = ts_month)) + geom_point() + ggtitle("Month")
+
+```
+
+There doesn't seem to be any changes in the relationship between flow and hhpu for any of the datetime features.
+
+Let's look at hhpu vs. flow by pump station type
+
+```{r hhpu vs flow by type}
+
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu)) + geom_point() + facet_wrap(~Type)
+ggplot(Line2_sdf, aes(x = flow_rate, y = hhpu, color = Type)) + geom_point()
+
+```
+
+Doesn't seem to matter.
+
+Let's look at some time series now. Will do this for each segment and each month.
+Segment "2-EP-YP"
+
+```{r Times Series 2-EP-YP}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-EP-YP"))
+sdf$pump_status_on <- (as.numeric(sdf$pump_status_on) - 1)*1000
+sdf$ts_year <- year(sdf$ts_pi)
+sdf <- subset(sdf,ts_year == 2016)
+
+for (i in 1:12){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf1, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) +
+    geom_line(aes(y = pump_status_on), color = "blue") +
+    geom_line(aes(y = flow_rate), color = "red") + facet_wrap(~pump_station) +
+    ggtitle(as.character(month(i, label = T, abbr = F)))
+  plot(p)
+}
+
+```
+
+Segment "2-YP-KB"
+
+```{r Times Series 2-YP-KB}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-YP-KB"))
+sdf$pump_status_on <- (as.numeric(sdf$pump_status_on) - 1)*1000
+sdf$ts_year <- year(sdf$ts_pi)
+sdf <- subset(sdf,ts_year == 2016)
+
+for (i in 1:12){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf1, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) +
+    geom_line(aes(y = pump_status_on), color = "blue") +
+    geom_line(aes(y = flow_rate), color = "red") + facet_wrap(~pump_station) +
+    ggtitle(as.character(month(i, label = T, abbr = F)))
+  plot(p)
+}
+
+```
+
+Segment "2-KB-SB"
+
+```{r Times Series 2-KB-SB}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-KB-SB"))
+sdf$pump_status_on <- (as.numeric(sdf$pump_status_on) - 1)*1000
+sdf$ts_year <- year(sdf$ts_pi)
+sdf <- subset(sdf,ts_year == 2016)
+
+for (i in 1:12){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf1, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) +
+    geom_line(aes(y = pump_status_on), color = "blue") +
+    geom_line(aes(y = flow_rate), color = "red") + facet_wrap(~pump_station) +
+    ggtitle(as.character(month(i, label = T, abbr = F)))
+  plot(p)
+}
+
+```
+
+Segment "2-QU-CM"
+
+```{r Times Series 2-QU-CM}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-QU-CM"))
+sdf$pump_status_on <- (as.numeric(sdf$pump_status_on) - 1)*1000
+sdf$ts_year <- year(sdf$ts_pi)
+sdf <- subset(sdf,ts_year == 2016)
+
+for (i in 1:12){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf1, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) +
+    geom_line(aes(y = pump_status_on), color = "blue") +
+    geom_line(aes(y = flow_rate), color = "red") + facet_wrap(~pump_station) +
+    ggtitle(as.character(month(i, label = T, abbr = F)))
+  plot(p)
+}
+
+```
+
+Segment "2-CM-GF"
+
+```{r Times Series 2-CM-CR}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-CM-GF"))
+sdf$pump_status_on <- (as.numeric(sdf$pump_status_on) - 1)*1000
+sdf$ts_year <- year(sdf$ts_pi)
+sdf <- subset(sdf,ts_year == 2016)
+
+for (i in 1:12){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf1, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) +
+    geom_line(aes(y = pump_status_on), color = "blue") +
+    geom_line(aes(y = flow_rate), color = "red") + facet_wrap(~pump_station) +
+    ggtitle(as.character(month(i, label = T, abbr = F)))
+  plot(p)
+}
+
+```
+
+Segment "2-GF-CR"
+
+```{r Times Series 2-QU-CM}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-GF-CR"))
+sdf$pump_status_on <- (as.numeric(sdf$pump_status_on) - 1)*1000
+sdf$ts_year <- year(sdf$ts_pi)
+sdf <- subset(sdf,ts_year == 2016)
+
+for (i in 1:12){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf1, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) +
+    geom_line(aes(y = pump_status_on), color = "blue") +
+    geom_line(aes(y = flow_rate), color = "red") + facet_wrap(~pump_station) +
+    ggtitle(as.character(month(i, label = T, abbr = F)))
+  plot(p)
+}
+
+```
+
+Segment "2-CR-PR"
+
+```{r Times Series 2-CR-PR}
+
+sdf <- rxImport(Line2, rowSelection = (line_segment == "2-CR-PR"))
+sdf$pump_status_on <- (as.numeric(sdf$pump_status_on) - 1)*1000
+sdf$ts_year <- year(sdf$ts_pi)
+sdf <- subset(sdf,ts_year == 2016)
+
+for (i in 1:12){
+  sdf1 <- subset(sdf, ts_month == i)
+  p <- ggplot(sdf1, aes(x = ts_pi)) + geom_line(aes(y = hhpu)) +
+    geom_line(aes(y = pump_status_on), color = "blue") +
+    geom_line(aes(y = flow_rate), color = "red") + facet_wrap(~pump_station) +
+    ggtitle(as.character(month(i, label = T, abbr = F)))
+  plot(p)
+}
+
+```
+
+Using Information Gain, let's determine which features work are best for predicting HHPU
+
+```{r HHPU Information Gain}
+
+library(FSelector)
+Line2_sdf1 <- Line2_sdf[-c(1,8,10,14,15,16,17)]
+corr <- information.gain(hhpu~.,Line2_sdf1)
+col_names <- names(Line2_sdf1)
+col_names <- col_names[-c(6)]
+corr <- data.frame("Features" = col_names, "Information_Gain" = corr$attr_importance)
+corr <- corr[order(corr$Information_Gain, decreasing = T),]
+print(corr)
+
+```

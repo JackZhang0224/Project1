@@ -1,0 +1,221 @@
+# Part 3b - Data Exploration 1: Label Exploration
+
+Required Packages
+
+```{r Required Packages, echo=FALSE, warning=FALSE}
+
+library(dplyrXdf)
+library(ggplot2)
+
+```
+
+Data to be loaded
+
+```{r Load Data}
+
+Line2 <- RxXdfData("Pi_Schedule.xdf")
+
+```
+
+Let's turn our attention to our label hhpu
+
+Distribution of HHPU
+
+```{r HHPU Distribution}
+
+rxHistogram(~hhpu,Line2)
+
+```
+
+A lot of hhpu = 0 points. Let's calculate the percentage of data points sucht that hhpu = 0
+
+```{r HHPU = 0 Porportion}
+
+nhhpu0 <- Line2 %>% filter(hhpu == 0) %>% nrow
+phhpu0 <- nhhpu0/nrow(Line2)*100
+cat("the percentage of points where hhpu = 0 is ", round(phhpu0,2),"%",sep="")
+
+```
+
+Let's look at the dist of hhpu by pump_station
+
+```{r HHPU dist by NumPumpsOn, echo=FALSE}
+
+rxHistogram(~hhpu|pump_station,Line2)
+
+```
+
+Can't see much so let's look at hhpu by segment
+
+```{r HHPU by Segment}
+
+rxHistogram(~hhpu|line_segment,Line2)
+
+```
+
+Let's look at the distribution of hhpu = 0 for each segment
+
+```{r HHPU Distribution by Segment and Station}
+
+rxHistogram(~hhpu|pump_station, Line2, rowSelection = (line_segment == "2-CM-CR"), title = "2-CM-CR")
+rxHistogram(~hhpu|pump_station, Line2, rowSelection = (line_segment == "2-CR-PR"), title = "2-CR-PR")
+rxHistogram(~hhpu|pump_station, Line2, rowSelection = (line_segment == "2-KB-SB"), title = "2-KB-SB")
+rxHistogram(~hhpu|pump_station, Line2, rowSelection = (line_segment == "2-QU-CM"), title = "2-QU-CM")
+rxHistogram(~hhpu|pump_station, Line2, rowSelection = (line_segment == "2-EP-YP"), title = "2-EP-YP")
+rxHistogram(~hhpu|pump_station, Line2, rowSelection = (line_segment == "2-YP-KB"), title = "2-YP-KB")
+
+```
+
+Segments 2-CM-CR and 2-CR-PR had Plenty of points where HHPU didn't equal 0. For the other 4 segments, the majority of points had hhpu = 0.
+
+Let's calculate the percentage of points where hhpu = 0 for each station.
+
+```{r Porportion of Points HHPU = 0 by segment, echo=FALSE, r Porportion of Points HHPU=0 by segment}
+
+hhpu0 <- rxDataStep(Line2, outFile = "Line2_hhpu0.xdf", rowSelection = (hhpu == 0), overwrite = T)
+
+hhpu0_len <- rxCube(~line_segment, hhpu0)
+hhpu0_len <- hhpu0_len$Counts
+hhpu_len <- rxCube(~line_segment, Line2)
+hhpu_len <- hhpu_len$Counts
+phhpu0 <- hhpu0_len/hhpu_len*100
+
+segment <- Line2 %>% select(line_segment) %>% distinct %>% head(10)
+print(data.frame("Segment" = segment, "Porportion" = phhpu0))
+
+```
+
+For segments 2-EP-YP,, 2-KB-SB, 2-QU-CM, and 2-YP-KB the porportion of points such that hhpu = 0 is approximately half.
+
+Let's look at hhpu by pump_status_on
+
+```{r HHPU by pump_status_on}
+
+rxHistogram(~hhpu|pump_status_on,Line2)
+
+```
+
+Calculate the percentage of data points where NumPumpsOn = 0 given hhpu = 0
+
+```{r pumps_status_on = 0 given hhpu = 0}
+
+hhpu0n0 <- hhpu0 %>% filter(pump_status_on == 0) %>% nrow()
+phhpu0n0 <- hhpu0n0/nrow(hhpu0)*100
+cat("the percentage of points where pump_status_on = 0 given hhpu = 0 is ",round(phhpu0n0,2),"%",sep="")
+
+```
+
+Given hhpu = 0, every pump is off for about 99.44% of the pumps. Previously we found that 99.3% of points had flow = 0 given all the pumps were off.
+
+Let's look at the percentage of data points where hhpu = 0 given num_pumps_on = 0
+
+```{r Percenteage and Dist hhpu = 0 given pump_status_on = 0}
+
+pump0 <- rxDataStep(Line2, outFile = "pump0.xdf", rowSelection = (pump_status_on == 0), overwrite = T)
+nhhpu0 <- pump0 %>% filter(hhpu == 0) %>% nrow()
+phhpu0 <- nhhpu0/nrow(pump0)*100
+
+cat("the percentage of points where hhpu = 0 given pump_status_on = 0 is ",round(phhpu0,2),"%",sep="")
+rxHistogram(~hhpu,pump0)
+
+```
+
+Let's see how often flow = 0 given hhpu = 0.
+
+```{r Percentage flow = 0 given hhpu = 0}
+
+hhpu0f0 <- hhpu0 %>% filter(flow_rate == 0) %>% nrow()
+phhpu0f0 <- hhpu0f0/nrow(hhpu0)*100
+cat("the percentage of points where flow = 0 given hhpu = 0 is ",round(phhpu0f0,2),"%",sep="")
+
+```
+
+So roughly 70% of the data points have flow = 0 given hhpu = 0. This is probably because it takes some time for the liquid to stop flowing once the pumps are shut off. Let's determine the distribution of flow_rate given hhpu = 0
+
+```{r Flow Distribution given hhpu = 0}
+
+rxHistogram(~flow_rate,hhpu0)
+
+```
+
+Let's look hhpu = 0 given flow = 0 distribution and porportion.
+
+```{r HHPU = 0 given Flow = 0}
+
+flow0 <- rxDataStep(Line2, outFile = "flow0.xdf", rowSelection = (flow_rate == 0), overwrite = T)
+flow0h0 <- flow0 %>% select(hhpu) %>% nrow()
+pflow0h0 <- flow0h0/nrow(flow0)*100
+
+cat("the percentage of points where hhpu = 0 given flow = 0 is ", round(pflow0h0,2),"%",sep="")
+rxHistogram(~hhpu,flow0)
+
+```
+
+given flow = 0, approximately 100% of the points had hhpu = 0.
+
+So while having no pumps on and hhpu = 0 will not always mean flow = 0 (it takes time to slow down), if flow = 0, hhpu and pump_status_on will almost always be 0.
+
+Let's look at commodity group and hhpu
+
+```{r hhpu by commodity group}
+
+rxHistogram(~hhpu|commodity_group,Line2)
+
+```
+
+# Removing HHPU = 0 from the data
+
+We can see that the vast majority of points with hhpu = 0 also had pump_status_on = 0 but because of this we can't see much else so let's filter out the points = 0.
+
+####NOTE TO SELF: perform data exploration on on a data set with hhpu = 0 filtered out
+
+```{r HHPU != 0 by pump_status}
+
+hhpu_n0 <- rxDataStep(Line2, outFile = "Line2_hhpu_not0.xdf", rowSelection = (hhpu != 0), overwrite = T)
+
+rxHistogram(~hhpu,hhpu_n0)
+rxHistogram(~hhpu|pump_status_on,hhpu_n0)
+
+```
+
+Clearly the number of pumps on increases the hhpu value.
+
+Let's look at hhpu and commodity id with hhpu = 0 filtered out.
+
+Let's look at commodity group and hhpu
+
+```{r hhpu by commodity group}
+
+rxHistogram(~hhpu|commodity_group, hhpu_n0)
+
+```
+
+Doesn't seem to be much of a difference in hhpu for each commodity group.
+
+
+## HHPU vs. Time variables
+
+hhpu by day, day of the week, hour, and month
+
+```{r HHPU by Datetime Distribution}
+
+rxHistogram(~hhpu|ts_day, Line2, title = "Day")
+rxHistogram(~hhpu|ts_dow, Line2, title = "Day of Week")
+rxHistogram(~hhpu|ts_hour, Line2, title = "Hour")
+rxHistogram(~hhpu|ts_month, Line2 , title = "Month")
+
+```
+
+HHPU = 0 is killing this so let's remove the data points where hhpu = 0
+
+```{r HHPU != 0 by Datetime Distribution}
+
+rxHistogram(~hhpu|ts_day, hhpu_n0, title = "Day")
+rxHistogram(~hhpu|ts_dow, hhpu_n0, title = "Day of Week")
+rxHistogram(~hhpu|ts_hour, hhpu_n0, title = "Hour")
+rxHistogram(~hhpu|ts_month, hhpu_n0, title = "Month")
+
+```
+
+HHPU doesn't seem to depend on any of these datetime values.
+

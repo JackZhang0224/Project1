@@ -1,0 +1,730 @@
+# Part 3c - Model Building: Cross Validation
+
+Required Packages
+
+```{r Required Packages}
+
+library(dplyrXdf)
+
+```
+
+We need to load both our models and data
+
+```{r Data/Model Import}
+
+load("trained_models.Rdata")
+lm_model <- trained_models$LinMod
+glm_model <- trained_models$Glm
+dt_model <- trained_models$DTree
+df_model <- trained_models$DForest
+bdt_model <- trained_models$BTree
+remove(trained_models)
+
+Line2 <- RxXdfData("Pi_Schedule.xdf")
+
+```
+
+Before moving on to new data, let's do some cross validation. To do this we need to adjust the split_strata function. To do this, we'll split up the data one station at a time and append a column which signifies which fold that row will belong to. We'll return a list which contains each fold as a dataframe.
+
+```{r}
+
+create_Folds <- function(df=Line2,st="station",n=2){
+
+  p <- 1/n
+  str <- st
+  stu <- unique(df[str])
+  nst <- nrow(stu)
+  folds <- list()
+  df_folds <- df[0,]
+  df_folds <- cbind(df_folds, fold = numeric(0))
+  
+  for (i in 1:nst){
+    
+    dfx <- subset(df, df[,str]==stu[i,1])
+    len <- floor(p*nrow(dfx))
+    rest <- nrow(dfx) - n*len
+    
+    fold_st <- c()
+    for (j in 1:n){
+      fold_st <- c(fold_st, rep(j,len))
+    }
+    fold_st <- c(fold_st, rep(n+1,rest))
+    fold_st <- sample(fold_st)
+    dfx$fold <- fold_st
+    df_folds <- rbind(df_folds,dfx)
+    
+  }
+  
+  for (i in 1:n){
+    dfx <- subset(df_folds, fold == i)
+    folds[[i]] <- dfx
+  }
+  
+  return(folds)
+  
+}
+
+num_folds <- 10
+Line2_df <- rxImport(Line2)
+Line2_folds <- create_Folds(Line2_df, st = 'pump_station', n = num_folds)
+remove(Line2_df)
+
+Line2_folds_xdf = list()
+for (i in 1:num_folds){
+  file_name <- paste0("Line2_fold",i,".xdf")
+  Line2_fold <- rxImport(inData = Line2_folds[[i]], outFile = file_name, stringsAsFactors = T, varsToDrop = c("fold"))
+  Line2_folds_xdf[[i]] <- Line2_fold
+}
+
+remove(Line2_folds)
+remove(Line2_fold)
+
+```
+
+After running this code, we'll get a list containing an xdf file for each fold.
+
+Now can start training and test our models. First we need our formula and import and functions we need.
+
+```{r Create Formula}
+
+make_formula <- function (xdf = Line2, resp_var = "hhpu", vars_to_skip = c()) {
+  
+  features <- names(xdf)
+  features <- features[features != resp_var]
+  features <- subset(features,!(features %in% vars_to_skip))
+  
+  formula <- as.formula(paste(resp_var, paste0(features,collapse = " + "), sep = " ~ "))
+  return(formula)
+  
+}
+
+formula <- make_formula(Line2, "hhpu", c("ts_pi", "kw","differential", "observed_vol", "observed_ind"))
+
+```
+
+User Defined functions which will be used for training/testing on the folds. The stats calculator was created for the file Model Building.Rmd and change_Xdf was created for Data Exploration_Raw Data.Rmd file. The other two functions are just basic column conversion functions used for xdf files.
+
+```{r User Functions Needed}
+
+# Used to calculate R2 values once model is scored
+Stats_Calculator <- function(xdf){
+  
+  xdf <- mutate(xdf, residuals = hhpu - hhpu_Pred)
+  hhpu_mean <- mean(xdf$hhpu)
+  SSres <- sum(xdf$residuals^2)
+  SStot <- sum((xdf$hhpu - hhpu_mean)^2)
+  p <- length(names(xdf)) - 2
+  n <- nrow(xdf)
+  
+  MAE <- sum(abs(xdf$residuals))/n
+  RMSE <- sqrt(sum(xdf$residuals^2)/n)
+  Rsquared <- 1 - SSres/SStot
+  Rsquared_adj <- Rsquared - (1 - Rsquared)*(p/(n-p-1))
+  
+  return(c(MAE,RMSE,Rsquared,Rsquared_adj))
+  
+}
+
+# Used to convert factors to strings
+conv_String = function(dat){
+  dat$pump_station <- as.character(dat$pump_station)
+  dat$line_segment <- as.character(dat$line_segment)
+  dat$ts_month <- as.character(dat$ts_month)
+  dat$ts_dow <- as.character(dat$ts_dow)
+  dat$ts_day <- as.character(dat$ts_day)
+  dat$ts_hour <- as.character(dat$ts_hour)
+  dat$activity_code <- as.character(dat$activity_code)
+  dat$commodity_group <- as.character(dat$commodity_group)
+  return(dat)
+}
+
+# Used to convert strings to factors
+conv_Factor = function(dat){
+  dat$pump_station <- as.factor(dat$pump_station)
+  dat$line_segment <- as.factor(dat$line_segment)
+  dat$ts_month <- as.factor(dat$ts_month)
+  dat$ts_dow <- as.factor(dat$ts_dow)
+  dat$ts_day <- as.factor(dat$ts_day)
+  dat$ts_hour <- as.factor(dat$ts_hour)
+  dat$activity_code <- as.factor(dat$activity_code)
+  dat$commodity_group <- as.factor(dat$commodity_group)
+  return(dat)
+}
+
+# Used to easily rename and remove xdf files
+change_Xdf <- function(starting_filename = "Line2.xdf", final_filename = starting_filename, n = 1){
+  
+  xdf <- starting_filename
+  xdf_name <- substr(xdf, 1, nchar(xdf) - 4)
+  xdf_ext <- ".xdf"
+  i <- 0
+  
+  while (i < n){
+    if (i == 0){
+      file.remove(xdf)
+      i <- i + 1
+    }
+    else {
+      xdf_str <- paste0(xdf_name,i,xdf_ext)
+      file.remove(xdf_str)
+      i <- i + 1
+    }
+  }
+  
+  xdf_str <- paste0(xdf_name,i,xdf_ext)
+  file.rename(xdf_str, final_filename)
+  return(RxXdfData(final_filename))
+  
+}
+
+```
+
+Let's train on fold 1 and test on the other folds.
+
+Steps:
+1. Specify which fold we are currently training on (done manually). We then remove this fold from our test folds.
+2. Later on we will merge the test folds into one xdf but due to querks with xdf, we need to convert the factors to characters and then back to factors after the merge. We need to ensure the levels are matching when we train and score our models. The simpliest way to do this is to just convert the factors of the training set to characters and back. You will need to manually change the file names.
+3. Train you models on the test set. You will need to manually rename the models to the fold you are running.
+4. Merge the test folds into one data set. As stated before we will need to convert to strings and then back to factors. For the first fold (only), since this is the training fold we need to initiate the xdf file using the 2nd fold. This is why inData = Line2_folds_xdf[[2]]. For every other fold we will initialize the xdf file with fold 1 thus we will use inData = Line2_folds_xdf[[1]] instead.
+5. Score your model, if you are saving each the models from each fold, remember to rename fold_models to the specific fold you are working on.
+6. For the first fold we will create a data frame which will show the R2adj value for each model on the first fold. For the folds after this, we will append a column onto our data frame which shows the R2adj value of each model for that specific fold. This way once we've run our model for every fold, we'll have a dataframe to compare R2adj values. Remember to rename the column name of your R2 value to the fold you are working on. For the last fold, we'll write this data frame to a csv file to save it for later.
+7. (Optional) For those who don't want to keep their models saved in local memory. Saves the models as a Rdata file, remember to rename the file output each time.
+
+Fold 1
+
+```{r Fold 1 train and test}
+
+train_fold <- 1
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds[[train_fold]], outFile = "Line2_fold11.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold11.xdf", outFile = "Line2_fold12.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold1.xdf", n = 2)
+
+lm_fold1 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold1 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold1 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold1 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold1 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models1 <- list(lm_fold1, glm_fold1, dt_fold1, df_fold1, bdt_fold1)
+
+
+rxDataStep(inData = Line2_folds_xdf[[2]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models1[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats <- data.frame(models = c("lm", "glm", "dt", "df", "bdt"), Fold1_R2adj = R2adj)
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models1, file = "fold_models1.Rdata")
+remove(fold_models1)
+remove(lm_fold1)
+remove(glm_fold1)
+remove(dt_fold1)
+remove(df_fold1)
+remove(bdt_fold1)
+
+```
+
+Fold 2
+
+```{r Fold 2 train and test}
+
+train_fold <- 2
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold21.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold21.xdf", outFile = "Line2_fold22.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold2.xdf", n = 2)
+
+lm_fold2 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold2 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold2 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold2 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold2 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models2 <- list(lm_fold2, glm_fold2, dt_fold2, df_fold2, bdt_fold2)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models2[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold2 <- R2adj
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models2, file = "fold_models2.Rdata")
+remove(fold_models2)
+remove(lm_fold2)
+remove(glm_fold2)
+remove(dt_fold2)
+remove(df_fold2)
+remove(bdt_fold2)
+
+```
+
+Fold 3
+
+```{r Fold 3 train and test}
+
+train_fold <- 3
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold31.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold31.xdf", outFile = "Line2_fold32.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold3.xdf", n = 2)
+
+lm_fold3 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold3 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold3 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold3 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold3 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models3 <- list(lm_fold3, glm_fold3, dt_fold3, df_fold3, bdt_fold3)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models3[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold3 <- R2adj
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models3, file = "fold_models3.Rdata")
+remove(fold_models3)
+remove(lm_fold3)
+remove(glm_fold3)
+remove(dt_fold3)
+remove(df_fold3)
+remove(bdt_fold3)
+
+```
+
+Fold 4
+
+```{r Fold 4 train and test}
+
+train_fold <- 4
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold41.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold41.xdf", outFile = "Line2_fold42.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold4.xdf", n = 2)
+
+lm_fold4 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold4 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold4 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold4 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold4 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models4 <- list(lm_fold4, glm_fold4, dt_fold4, df_fold4, bdt_fold4)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models4[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold4 <- R2adj
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models4, file = "fold_models4.Rdata")
+remove(fold_models4)
+remove(lm_fold4)
+remove(glm_fold4)
+remove(dt_fold4)
+remove(df_fold4)
+remove(bdt_fold4)
+
+```
+
+Fold 5
+
+```{r Fold 5 train and test}
+
+train_fold <- 5
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold51.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold51.xdf", outFile = "Line2_fold52.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold5.xdf", n = 2)
+
+lm_fold5 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold5 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold5 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold5 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold5 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models5 <- list(lm_fold5, glm_fold5, dt_fold5, df_fold5, bdt_fold5)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models5[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold5 <- R2adj
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models5, file = "fold_models5.Rdata")
+remove(fold_models5)
+remove(lm_fold5)
+remove(glm_fold5)
+remove(dt_fold5)
+remove(df_fold5)
+remove(bdt_fold5)
+
+```
+
+Fold 6
+
+```{r Fold 6 train and test}
+
+train_fold <- 6
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold61.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold61.xdf", outFile = "Line2_fold62.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold6.xdf", n = 2)
+
+lm_fold6 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold6 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold6 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold6 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold6 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models6 <- list(lm_fold6, glm_fold6, dt_fold6, df_fold6, bdt_fold6)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models6[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold6 <- R2adj
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models6, file = "fold_models6.Rdata")
+remove(fold_models6)
+remove(lm_fold6)
+remove(glm_fold6)
+remove(dt_fold6)
+remove(df_fold6)
+remove(bdt_fold6)
+
+```
+
+Fold 7
+
+```{r Fold 7 train and test}
+
+train_fold <- 7
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold71.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold71.xdf", outFile = "Line2_fold72.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold7.xdf", n = 2)
+
+lm_fold7 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold7 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold7 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold7 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold7 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models7 <- list(lm_fold7, glm_fold7, dt_fold7, df_fold7, bdt_fold7)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models7[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold7 <- R2adj
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models7, file = "fold_models7.Rdata")
+remove(fold_models7)
+remove(lm_fold7)
+remove(glm_fold7)
+remove(dt_fold7)
+remove(df_fold7)
+remove(bdt_fold7)
+
+```
+
+Fold 8
+
+```{r Fold 8 train and test}
+
+train_fold <- 8
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold81.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold81.xdf", outFile = "Line2_fold82.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold8.xdf", n = 2)
+
+lm_fold8 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold8 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold8 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold8 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold8 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models8 <- list(lm_fold8, glm_fold8, dt_fold8, df_fold8, bdt_fold8)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models8[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold8 <- R2adj
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models8, file = "fold_models8.Rdata")
+remove(fold_models8)
+remove(lm_fold8)
+remove(glm_fold8)
+remove(dt_fold8)
+remove(df_fold8)
+remove(bdt_fold8)
+
+```
+
+Fold 9
+
+```{r Fold 9 train and test}
+
+train_fold <- 9
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold91.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold91.xdf", outFile = "Line2_fold92.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold9.xdf", n = 2)
+
+lm_fold9 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold9 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold9 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold9 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold9 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models9 <- list(lm_fold9, glm_fold9, dt_fold9, df_fold9, bdt_fold9)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models9[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold9 <- R2adj
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+
+save(fold_models9, file = "fold_models9.Rdata")
+remove(fold_models9)
+remove(lm_fold9)
+remove(glm_fold9)
+remove(dt_fold9)
+remove(df_fold9)
+remove(bdt_fold9)
+
+```
+
+Fold 10
+
+```{r Fold 10 train and test}
+
+train_fold <- 10
+test_folds <- c(1:10)
+test_folds <- test_folds[-c(train_fold)]
+
+rxDataStep(inData = Line2_folds_xdf[[train_fold]], outFile = "Line2_fold101.xdf", transformFunc = conv_String)
+rxDataStep(inData = "Line2_fold101.xdf", outFile = "Line2_fold102.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_fold10.xdf", n = 2)
+
+lm_fold10 <- rxLinMod(formula, data = Line2_folds_xdf[[train_fold]])
+glm_fold10 <- rxGlm(formula, data = Line2_folds_xdf[[train_fold]])
+dt_fold10 <- rxDTree(formula, data = Line2_folds_xdf[[train_fold]], minBucket = 10, reportProgress = 0)
+df_fold10 <- rxDForest(formula, nTree = 16, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      minBucket = 64, minSplit = 15620, maxDepth = 11)
+bdt_fold10 <- rxBTrees(formula, nTree = 50, importance = T, data = Line2_folds_xdf[[train_fold]], reportProgress = 0,
+                      lossFunction = "gaussian", maxDepth = 12, minSplit = 15620)
+fold_models10 <- list(lm_fold10, glm_fold10, dt_fold10, df_fold10, bdt_fold10)
+
+
+rxDataStep(inData = Line2_folds_xdf[[1]], outFile = "Line2_predfold.xdf", transformFunc = conv_String)
+test_folds <- test_folds[-c(1)]
+for(i in test_folds){
+  rxImport(inData = Line2_folds_xdf[[i]], outFile = "Line2_predfold.xdf", overwrite = T, append = T,
+           transformFunc = conv_String)
+}
+rxDataStep(inData = "Line2_predfold.xdf", outFile = "Line2_predfold1.xdf", transformFunc = conv_Factor)
+change_Xdf("Line2_predfold.xdf", n = 1)
+
+R2adj <- c()
+for (i in 1:5){
+  score <- rxPredict(fold_models10[[i]], "Line2_predfold.xdf", writeModelVars = T, outData = "Line2_fold_scored.xdf",
+                     overwrite = T)
+  fold_stats <- Stats_Calculator(score)
+  R2adj <- c(R2adj, fold_stats[4])
+}
+
+Fold_Stats$R2adj_Fold10 <- R2adj
+write.csv(fold_stats, file = "Fold1_Stats.csv")
+file.remove("Line2_predfold.xdf")
+file.remove("Line2_fold_scored.xdf")
+write.csv(Fold_Stats, "Model_Comparision_Fold_Stats.csv")
+
+save(fold_models10, file = "fold_models10.Rdata")
+remove(fold_models10)
+remove(lm_fold10)
+remove(glm_fold10)
+remove(dt_fold10)
+remove(df_fold10)
+remove(bdt_fold10)
+
+```
+
+NOTE: If you haven't saved each fold's models into memory then we need to save the best fold's models.
+
+Best Fold for each model (no lm or glm since we still have NAs in our data):
+dt: fold 2
+df: fold 3
+bdt: fold 10
